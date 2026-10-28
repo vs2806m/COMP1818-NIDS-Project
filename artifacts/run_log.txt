@@ -1,0 +1,526 @@
+================================================================================
+ENVIRONMENT
+================================================================================
+Python 3.13.16 | PyTorch 2.11.0+cpu | scikit-learn 1.6.1 | pandas 2.2.3 | NumPy 2.1.3 | CUDA False
+Device: cpu
+
+================================================================================
+DATA LOADING AND INTEGRITY
+================================================================================
+[!] Local filenames are reversed relative to official split sizes.
+Training file: UNSW_NB15_testing-set.csv  (175,341 rows)
+Testing  file: UNSW_NB15_training-set.csv   (82,332 rows)
+Training SHA256: bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa
+Testing  SHA256: 734fe6642edf758f7c94d7d9149426b49d202fe8e7bf0bef47392489c3c0a559
+Training labels: {1: 119341, 0: 56000}
+Testing  labels: {1: 45332, 0: 37000}
+Raw-schema duplicates (train/test)     : 67,601 / 26,387
+Raw cross-split overlaps               : 940
+Model-visible duplicates (train/test)  : 74,303 / 28,386
+Model-visible cross-split overlaps     : 1,305
+Model-visible conflicting-label groups : 229
+
+================================================================================
+GROUP-AWARE SPLITS
+================================================================================
+  train       | 150,091 rows | normal=47,634 attack=102,457
+  val_es      |  12,739 rows | normal= 4,157 attack= 8,582
+  val_rules   |   6,152 rows | normal= 2,112 attack= 4,040
+  val_fusion  |   6,359 rows | normal= 2,097 attack= 4,262
+
+================================================================================
+PREPROCESSING
+================================================================================
+Transformed feature dimension: 63
+Normal training rows         : 47,634
+Note: val_fusion has 2,097 normal rows. Every percentile threshold, the fusion search, and the control use it.
+
+================================================================================
+CLASSICAL BASELINES
+================================================================================
+[ISO]   threshold=0.523423 | val exceedance=5.0072%
+[OCSVM] threshold=-146.108231 | val exceedance=5.0072%
+
+================================================================================
+DEEP AUTOENCODER
+================================================================================
+  AE epoch 001/300 | train=0.032786 | val_es=0.009253
+  AE epoch 020/300 | train=0.000450 | val_es=0.000493
+  AE epoch 040/300 | train=0.000315 | val_es=0.000373
+  AE epoch 060/300 | train=0.000272 | val_es=0.000339
+  AE epoch 080/300 | train=0.000247 | val_es=0.000310
+  AE epoch 100/300 | train=0.000231 | val_es=0.000294
+  AE epoch 120/300 | train=0.000224 | val_es=0.000287
+  AE epoch 140/300 | train=0.000221 | val_es=0.000302
+  AE epoch 160/300 | train=0.000215 | val_es=0.000281
+  AE epoch 180/300 | train=0.000212 | val_es=0.000272
+  AE epoch 200/300 | train=0.000208 | val_es=0.000266
+  AE epoch 220/300 | train=0.000201 | val_es=0.000268
+  AE epoch 240/300 | train=0.000192 | val_es=0.000256
+  AE epoch 260/300 | train=0.000191 | val_es=0.000242
+  AE epoch 280/300 | train=0.000187 | val_es=0.000237
+  AE epoch 300/300 | train=0.000186 | val_es=0.000236
+  [!] AE reached the 300-epoch cap without early stopping.
+[AE] unsupervised threshold = 0.000432
+[AE] label-tuned threshold  = 1.500000
+
+================================================================================
+RANDOM-SUBSPACE ENSEMBLE
+================================================================================
+  SubAE epoch 001/200 | train=0.078601 | val_es=0.037164
+  SubAE epoch 020/200 | train=0.001536 | val_es=0.001433
+  SubAE epoch 040/200 | train=0.001069 | val_es=0.001025
+  SubAE epoch 060/200 | train=0.000604 | val_es=0.000593
+  SubAE epoch 080/200 | train=0.000576 | val_es=0.000563
+  SubAE epoch 100/200 | train=0.000502 | val_es=0.000495
+  SubAE epoch 120/200 | train=0.000430 | val_es=0.000439
+  SubAE epoch 140/200 | train=0.000366 | val_es=0.000382
+  SubAE epoch 160/200 | train=0.000346 | val_es=0.000364
+  SubAE epoch 180/200 | train=0.000341 | val_es=0.000355
+  SubAE epoch 200/200 | train=0.000336 | val_es=0.000352
+  [!] Sub-AE reached the cap of 200 epochs.
+  Per-sub-AE validation MSE: min=0.00002 max=0.00073 ratio=32.55x
+  OutAE epoch 001/200 | train=0.208748 | val_es=0.209660
+  OutAE epoch 020/200 | train=0.001016 | val_es=0.044673
+  OutAE epoch 040/200 | train=0.000720 | val_es=0.043767
+  OutAE epoch 060/200 | train=0.000490 | val_es=0.043499
+  OutAE epoch 080/200 | train=0.000373 | val_es=0.043532
+  Output-AE early stopping at epoch 81.
+Ensemble has 8 sub-autoencoders (preferred 8).
+  Normalised errors [train] below 0: 0.0000%, above 1: 0.0000%
+  Normalised errors [val_es] below 0: 0.0000%, above 1: 0.0090%
+  Normalised errors [val_fusion] below 0: 0.0020%, above 1: 2.3058%
+  Normalised errors [test] below 0: 0.0012%, above 1: 1.3846%
+
+================================================================================
+SYMBOLIC RULES
+================================================================================
+[!] No rule config meets the 2% FPR cap.
+    Falling back to the lowest-FPR configuration.
+Selected rule config: percentiles=99, duration=0.05
+  val_rules FPR=3.2670% | attack recall=9.3317%
+Rule firing rates on test: normal=2.7432%, attack=14.6453%
+
+================================================================================
+HYBRID FUSION
+================================================================================
+Top-10 fusion configurations by val_fusion MCC:
+ alpha  gamma  threshold      MCC  Macro_F1      FPR
+   0.6   0.10        1.0 0.619995  0.777843 0.033381
+   0.6   0.05        1.0 0.619784  0.777692 0.033381
+   0.7   0.00        1.2 0.619611  0.777412 0.032904
+   0.7   0.05        1.2 0.619611  0.777412 0.032904
+   0.7   0.10        1.2 0.619611  0.777412 0.032904
+   0.6   0.00        1.0 0.619573  0.777542 0.033381
+   0.7   0.10        1.0 0.619507  0.778727 0.037196
+   0.6   0.00        0.9 0.619361  0.778319 0.036242
+   0.7   0.05        1.0 0.619294  0.778577 0.037196
+   0.7   0.00        1.1 0.619253  0.777780 0.034812
+
+MCC spread across top-10: std=0.0002 (range 0.6193–0.6200)
+
+Selected: alpha=0.6, gamma=0.1, threshold=1.0 (val_fusion MCC=0.6200)
+Implied ML threshold when no rule fires: 1.6667
+Implied ML threshold when a rule fires : 0.8571
+Control (AE label-tuned) validation MCC on val_fusion: 0.6194
+Hybrid validation MCC on val_fusion                 : 0.6200
+
+================================================================================
+SUPERVISED COMPARATOR
+================================================================================
+
+================================================================================
+HELD-OUT TEST EVALUATION
+================================================================================
+No test labels or test performance were used for model fitting or
+threshold selection. The training set was not modified using test data.
+
+==================================================================================================================================
+FINAL RESULTS TABLE — UNSW-NB15 HELD-OUT TEST SET
+==================================================================================================================================
+                                  Model                   Score_Type                        Evaluation_Setup  Accuracy  Macro_F1    MCC  ROC_AUC  Average_Precision  Precision  Recall    FPR    TP    TN    FP    FN
+                        Trivial: Random      continuous random score                      test-only baseline    0.5026    0.5013 0.0050   0.5048             0.5537     0.5531  0.5039 0.4989 22842 18541 18459 22490
+                Trivial: Majority Class              binary decision                      test-only baseline    0.5506    0.3551 0.0000      NaN                NaN     0.5506  1.0000 1.0000 45332     0 37000     0
+                   Trivial: Normal Only              binary decision                      test-only baseline    0.4494    0.3101 0.0000      NaN                NaN     0.0000  0.0000 0.0000     0 37000     0 45332
+             Baseline: Isolation Forest     continuous anomaly score  val_fusion normal-percentile threshold    0.5849    0.5570 0.2907   0.7863             0.8183     0.8411  0.3033 0.0702 13749 34403  2597 31583
+                Baseline: One-Class SVM     continuous anomaly score  val_fusion normal-percentile threshold    0.7876    0.7870 0.6125   0.8246             0.8783     0.9265  0.6671 0.0648 30242 34602  2398 15090
+               Baseline: Symbolic Rules            binary rule score               val_rules-selected config    0.5177    0.4475 0.2039      NaN                NaN     0.8674  0.1465 0.0274  6639 35985  1015 38693
+        Connectionist: Deep Autoencoder     continuous anomaly score  val_fusion normal-percentile threshold    0.8021    0.8021 0.6259   0.8731             0.9030     0.9055  0.7152 0.0915 32423 33615  3385 12909
+Control: Deep Autoencoder (Label-Tuned)     continuous anomaly score          val_fusion MCC-tuned threshold    0.8051    0.8049 0.6395   0.8731             0.9030     0.9274  0.7009 0.0672 31774 34513  2487 13558
+Connectionist: Random-Subspace Ensemble     continuous anomaly score  val_fusion normal-percentile threshold    0.7561    0.7549 0.5568   0.7450             0.8460     0.9062  0.6214 0.0788 28169 34085  2915 17163
+                   Ablation: Logical OR              binary decision              locked component decisions    0.7959    0.7959 0.6077      NaN                NaN     0.8843  0.7240 0.1161 32819 32705  4295 12513
+                  Ablation: Logical AND              binary decision              locked component decisions    0.5240    0.4474 0.2515      NaN                NaN     0.9835  0.1377 0.0028  6243 36895   105 39089
+     Ablation: Hybrid with Rules Zeroed      continuous hybrid score rules disabled, other parameters locked    0.8035    0.8032 0.6387   0.8731             0.9030     0.9314  0.6943 0.0627 31476 34681  2319 13856
+        Proposed: Neuro-Symbolic Hybrid      continuous hybrid score      val_fusion-tuned fusion parameters    0.8032    0.8029 0.6374   0.8720             0.9029     0.9296  0.6952 0.0645 31513 34613  2387 13819
+   Supervised Comparator: Random Forest supervised class probability    supervised (uses labels for fitting)    0.8690    0.8625 0.7506   0.9785             0.9824     0.8149  0.9859 0.2743 44695 26851 10149   637
+
+Attack prevalence in test set: 0.5506
+Average Precision should be interpreted against this prevalence.
+
+================================================================================
+ATTACK-CATEGORY BREAKDOWN
+================================================================================
+true_label          0      1    All
+attack_cat                         
+Analysis            0    677    677
+Backdoor            0    583    583
+DoS                 0   4089   4089
+Exploits            0  11132  11132
+Fuzzers             0   6062   6062
+Generic             0  18871  18871
+Normal          37000      0  37000
+Reconnaissance      0   3496   3496
+Shellcode           0    378    378
+Worms               0     44     44
+All             37000  45332  82332
+
+Category recall breakdown:
+Attack Category  Sample Count  hybrid_Recall  hybrid_zeroed_Recall  ae_Recall  ae_control_Recall  ensemble_Recall  ocsvm_Recall  rules_Recall  rf_Recall
+ Reconnaissance          3496         0.1364                0.1362     0.1445             0.1382           0.1087        0.1041        0.0292     0.9994
+       Backdoor           583         0.9194                0.9194     0.9194             0.9194           0.9022        0.9057        0.0377     1.0000
+            DoS          4089         0.8051                0.8048     0.8154             0.8070           0.7435        0.7762        0.0386     0.9988
+       Exploits         11132         0.5805                0.5799     0.6203             0.5852           0.3498        0.5070        0.0166     0.9960
+       Analysis           677         0.9188                0.9188     0.9188             0.9188           0.9188        0.9143        0.0443     1.0000
+        Fuzzers          6062         0.3025                0.2984     0.3293             0.3040           0.2362        0.2611        0.0650     0.9042
+          Worms            44         0.2727                0.2727     0.3182             0.2727           0.0455        0.0682        0.0455     1.0000
+      Shellcode           378         0.0000                0.0000     0.0132             0.0053           0.0000        0.0000        0.0476     0.9947
+        Generic         18871         0.9686                0.9684     0.9807             0.9783           0.9683        0.9712        0.3035     0.9999
+
+================================================================================
+MULTI-SEED SENSITIVITY
+================================================================================
+Seeds: [42, 7, 123, 2024, 99]. Fusion parameters and rule
+thresholds are locked from the primary seed.
+  SubAE epoch 001/200 | train=0.078601 | val_es=0.037164
+  SubAE epoch 020/200 | train=0.001536 | val_es=0.001433
+  SubAE epoch 040/200 | train=0.001069 | val_es=0.001025
+  SubAE epoch 060/200 | train=0.000604 | val_es=0.000593
+  SubAE epoch 080/200 | train=0.000576 | val_es=0.000563
+  SubAE epoch 100/200 | train=0.000502 | val_es=0.000495
+  SubAE epoch 120/200 | train=0.000430 | val_es=0.000439
+  SubAE epoch 140/200 | train=0.000366 | val_es=0.000382
+  SubAE epoch 160/200 | train=0.000346 | val_es=0.000364
+  SubAE epoch 180/200 | train=0.000341 | val_es=0.000355
+  SubAE epoch 200/200 | train=0.000336 | val_es=0.000352
+  [!] Sub-AE reached the cap of 200 epochs.
+  Per-sub-AE validation MSE: min=0.00002 max=0.00073 ratio=32.55x
+  OutAE epoch 001/200 | train=0.208748 | val_es=0.209660
+  OutAE epoch 020/200 | train=0.001016 | val_es=0.044673
+  OutAE epoch 040/200 | train=0.000720 | val_es=0.043767
+  OutAE epoch 060/200 | train=0.000490 | val_es=0.043499
+  OutAE epoch 080/200 | train=0.000373 | val_es=0.043532
+  Output-AE early stopping at epoch 81.
+  AE epoch 001/300 | train=0.032786 | val_es=0.009253
+  AE epoch 020/300 | train=0.000450 | val_es=0.000493
+  AE epoch 040/300 | train=0.000315 | val_es=0.000373
+  AE epoch 060/300 | train=0.000272 | val_es=0.000339
+  AE epoch 080/300 | train=0.000247 | val_es=0.000310
+  AE epoch 100/300 | train=0.000231 | val_es=0.000294
+  AE epoch 120/300 | train=0.000224 | val_es=0.000287
+  AE epoch 140/300 | train=0.000221 | val_es=0.000302
+  AE epoch 160/300 | train=0.000215 | val_es=0.000281
+  AE epoch 180/300 | train=0.000212 | val_es=0.000272
+  AE epoch 200/300 | train=0.000208 | val_es=0.000266
+  AE epoch 220/300 | train=0.000201 | val_es=0.000268
+  AE epoch 240/300 | train=0.000192 | val_es=0.000256
+  AE epoch 260/300 | train=0.000191 | val_es=0.000242
+  AE epoch 280/300 | train=0.000187 | val_es=0.000237
+  AE epoch 300/300 | train=0.000186 | val_es=0.000236
+  [!] AE reached the 300-epoch cap without early stopping.
+  AE epoch 001/300 | train=0.038409 | val_es=0.014117
+  AE epoch 020/300 | train=0.000536 | val_es=0.000561
+  AE epoch 040/300 | train=0.000327 | val_es=0.000368
+  AE epoch 060/300 | train=0.000287 | val_es=0.000330
+  AE epoch 080/300 | train=0.000269 | val_es=0.000307
+  AE epoch 100/300 | train=0.000259 | val_es=0.000292
+  AE epoch 120/300 | train=0.000253 | val_es=0.000293
+  AE epoch 140/300 | train=0.000248 | val_es=0.000281
+  AE epoch 160/300 | train=0.000237 | val_es=0.000266
+  AE epoch 180/300 | train=0.000229 | val_es=0.000262
+  AE epoch 200/300 | train=0.000225 | val_es=0.000257
+  AE epoch 220/300 | train=0.000223 | val_es=0.000249
+  AE epoch 240/300 | train=0.000221 | val_es=0.000250
+  AE epoch 260/300 | train=0.000217 | val_es=0.000249
+  AE epoch 280/300 | train=0.000211 | val_es=0.000243
+  AE epoch 300/300 | train=0.000206 | val_es=0.000239
+  [!] AE reached the 300-epoch cap without early stopping.
+  SubAE epoch 001/200 | train=0.081634 | val_es=0.034718
+  SubAE epoch 020/200 | train=0.001222 | val_es=0.001114
+  SubAE epoch 040/200 | train=0.000870 | val_es=0.000798
+  SubAE epoch 060/200 | train=0.000588 | val_es=0.000520
+  SubAE epoch 080/200 | train=0.000583 | val_es=0.000518
+  SubAE epoch 100/200 | train=0.000535 | val_es=0.000510
+  SubAE epoch 120/200 | train=0.000432 | val_es=0.000428
+  SubAE epoch 140/200 | train=0.000429 | val_es=0.000426
+  SubAE epoch 160/200 | train=0.000429 | val_es=0.000424
+  Sub-AE early stopping at epoch 175.
+  Per-sub-AE validation MSE: min=0.00013 max=0.00150 ratio=11.71x
+  OutAE epoch 001/200 | train=0.231409 | val_es=0.198369
+  OutAE epoch 020/200 | train=0.001512 | val_es=0.001425
+  OutAE epoch 040/200 | train=0.000499 | val_es=0.000600
+  OutAE epoch 060/200 | train=0.000362 | val_es=0.000446
+  OutAE epoch 080/200 | train=0.000323 | val_es=0.000420
+  OutAE epoch 100/200 | train=0.000314 | val_es=0.000413
+  OutAE epoch 120/200 | train=0.000312 | val_es=0.000413
+  OutAE epoch 140/200 | train=0.000311 | val_es=0.000411
+  OutAE epoch 160/200 | train=0.000311 | val_es=0.000411
+  Output-AE early stopping at epoch 166.
+  AE epoch 001/300 | train=0.041365 | val_es=0.009844
+  AE epoch 020/300 | train=0.000552 | val_es=0.000565
+  AE epoch 040/300 | train=0.000379 | val_es=0.000409
+  AE epoch 060/300 | train=0.000287 | val_es=0.000327
+  AE epoch 080/300 | train=0.000262 | val_es=0.000300
+  AE epoch 100/300 | train=0.000246 | val_es=0.000289
+  AE epoch 120/300 | train=0.000237 | val_es=0.000280
+  AE epoch 140/300 | train=0.000232 | val_es=0.000286
+  AE epoch 160/300 | train=0.000229 | val_es=0.000286
+  AE epoch 180/300 | train=0.000226 | val_es=0.000267
+  AE epoch 200/300 | train=0.000225 | val_es=0.000269
+  Early stopping at epoch 215.
+  AE epoch 001/300 | train=0.040278 | val_es=0.011767
+  AE epoch 020/300 | train=0.000495 | val_es=0.000530
+  AE epoch 040/300 | train=0.000336 | val_es=0.000368
+  AE epoch 060/300 | train=0.000295 | val_es=0.000332
+  AE epoch 080/300 | train=0.000272 | val_es=0.000305
+  AE epoch 100/300 | train=0.000258 | val_es=0.000326
+  AE epoch 120/300 | train=0.000246 | val_es=0.000283
+  AE epoch 140/300 | train=0.000238 | val_es=0.000275
+  AE epoch 160/300 | train=0.000234 | val_es=0.000271
+  AE epoch 180/300 | train=0.000232 | val_es=0.000268
+  AE epoch 200/300 | train=0.000231 | val_es=0.000268
+  AE epoch 220/300 | train=0.000229 | val_es=0.000265
+  AE epoch 240/300 | train=0.000228 | val_es=0.000282
+  AE epoch 260/300 | train=0.000227 | val_es=0.000266
+  AE epoch 280/300 | train=0.000226 | val_es=0.000263
+  AE epoch 300/300 | train=0.000226 | val_es=0.000267
+  [!] AE reached the 300-epoch cap without early stopping.
+  SubAE epoch 001/200 | train=0.078139 | val_es=0.027123
+  SubAE epoch 020/200 | train=0.001440 | val_es=0.001309
+  SubAE epoch 040/200 | train=0.001087 | val_es=0.000990
+  SubAE epoch 060/200 | train=0.000516 | val_es=0.000512
+  SubAE epoch 080/200 | train=0.000462 | val_es=0.000474
+  SubAE epoch 100/200 | train=0.000453 | val_es=0.000468
+  SubAE epoch 120/200 | train=0.000447 | val_es=0.000460
+  SubAE epoch 140/200 | train=0.000434 | val_es=0.000445
+  SubAE epoch 160/200 | train=0.000350 | val_es=0.000372
+  SubAE epoch 180/200 | train=0.000330 | val_es=0.000362
+  SubAE epoch 200/200 | train=0.000322 | val_es=0.000356
+  [!] Sub-AE reached the cap of 200 epochs.
+  Per-sub-AE validation MSE: min=0.00006 max=0.00055 ratio=8.66x
+  OutAE epoch 001/200 | train=0.246179 | val_es=0.189341
+  OutAE epoch 020/200 | train=0.000749 | val_es=0.000856
+  OutAE epoch 040/200 | train=0.000518 | val_es=0.000698
+  OutAE epoch 060/200 | train=0.000438 | val_es=0.000627
+  OutAE epoch 080/200 | train=0.000355 | val_es=0.000433
+  OutAE epoch 100/200 | train=0.000354 | val_es=0.000429
+  OutAE epoch 120/200 | train=0.000356 | val_es=0.000429
+  OutAE epoch 140/200 | train=0.000354 | val_es=0.000429
+  OutAE epoch 160/200 | train=0.000355 | val_es=0.000430
+  Output-AE early stopping at epoch 176.
+  AE epoch 001/300 | train=0.038581 | val_es=0.011455
+  AE epoch 020/300 | train=0.000633 | val_es=0.000666
+  AE epoch 040/300 | train=0.000402 | val_es=0.000454
+  AE epoch 060/300 | train=0.000358 | val_es=0.000406
+  AE epoch 080/300 | train=0.000327 | val_es=0.000395
+  AE epoch 100/300 | train=0.000312 | val_es=0.000355
+  AE epoch 120/300 | train=0.000295 | val_es=0.000333
+  AE epoch 140/300 | train=0.000282 | val_es=0.000330
+  AE epoch 160/300 | train=0.000269 | val_es=0.000308
+  AE epoch 180/300 | train=0.000265 | val_es=0.000305
+  AE epoch 200/300 | train=0.000264 | val_es=0.000306
+  AE epoch 220/300 | train=0.000263 | val_es=0.000302
+  AE epoch 240/300 | train=0.000262 | val_es=0.000303
+  AE epoch 260/300 | train=0.000262 | val_es=0.000299
+  Early stopping at epoch 269.
+  AE epoch 001/300 | train=0.036592 | val_es=0.008565
+  AE epoch 020/300 | train=0.000556 | val_es=0.000562
+  AE epoch 040/300 | train=0.000380 | val_es=0.000417
+  AE epoch 060/300 | train=0.000326 | val_es=0.000353
+  AE epoch 080/300 | train=0.000305 | val_es=0.000337
+  AE epoch 100/300 | train=0.000289 | val_es=0.000326
+  AE epoch 120/300 | train=0.000257 | val_es=0.000291
+  AE epoch 140/300 | train=0.000251 | val_es=0.000281
+  AE epoch 160/300 | train=0.000249 | val_es=0.000282
+  AE epoch 180/300 | train=0.000246 | val_es=0.000280
+  AE epoch 200/300 | train=0.000245 | val_es=0.000276
+  AE epoch 220/300 | train=0.000243 | val_es=0.000279
+  AE epoch 240/300 | train=0.000239 | val_es=0.000276
+  AE epoch 260/300 | train=0.000234 | val_es=0.000288
+  AE epoch 280/300 | train=0.000230 | val_es=0.000263
+  AE epoch 300/300 | train=0.000229 | val_es=0.000264
+  [!] AE reached the 300-epoch cap without early stopping.
+  SubAE epoch 001/200 | train=0.087627 | val_es=0.039235
+  SubAE epoch 020/200 | train=0.000732 | val_es=0.000694
+  SubAE epoch 040/200 | train=0.000544 | val_es=0.000518
+  SubAE epoch 060/200 | train=0.000441 | val_es=0.000415
+  SubAE epoch 080/200 | train=0.000335 | val_es=0.000317
+  SubAE epoch 100/200 | train=0.000284 | val_es=0.000289
+  SubAE epoch 120/200 | train=0.000279 | val_es=0.000282
+  SubAE epoch 140/200 | train=0.000276 | val_es=0.000282
+  SubAE epoch 160/200 | train=0.000274 | val_es=0.000280
+  Sub-AE early stopping at epoch 175.
+  Per-sub-AE validation MSE: min=0.00003 max=0.00047 ratio=14.31x
+  OutAE epoch 001/200 | train=0.173307 | val_es=0.145092
+  OutAE epoch 020/200 | train=0.000679 | val_es=0.000740
+  OutAE epoch 040/200 | train=0.000438 | val_es=0.000582
+  Output-AE early stopping at epoch 59.
+  AE epoch 001/300 | train=0.037869 | val_es=0.010220
+  AE epoch 020/300 | train=0.000438 | val_es=0.000472
+  AE epoch 040/300 | train=0.000324 | val_es=0.000380
+  AE epoch 060/300 | train=0.000286 | val_es=0.000330
+  AE epoch 080/300 | train=0.000265 | val_es=0.000315
+  AE epoch 100/300 | train=0.000254 | val_es=0.000302
+  AE epoch 120/300 | train=0.000249 | val_es=0.000295
+  AE epoch 140/300 | train=0.000237 | val_es=0.000283
+  AE epoch 160/300 | train=0.000222 | val_es=0.000273
+  AE epoch 180/300 | train=0.000215 | val_es=0.000258
+  AE epoch 200/300 | train=0.000208 | val_es=0.000250
+  AE epoch 220/300 | train=0.000200 | val_es=0.000242
+  AE epoch 240/300 | train=0.000197 | val_es=0.000233
+  AE epoch 260/300 | train=0.000193 | val_es=0.000232
+  AE epoch 280/300 | train=0.000188 | val_es=0.000227
+  AE epoch 300/300 | train=0.000186 | val_es=0.000227
+  [!] AE reached the 300-epoch cap without early stopping.
+  AE epoch 001/300 | train=0.040166 | val_es=0.011373
+  AE epoch 020/300 | train=0.000601 | val_es=0.000605
+  AE epoch 040/300 | train=0.000429 | val_es=0.000473
+  AE epoch 060/300 | train=0.000354 | val_es=0.000382
+  AE epoch 080/300 | train=0.000315 | val_es=0.000351
+  AE epoch 100/300 | train=0.000291 | val_es=0.000328
+  AE epoch 120/300 | train=0.000271 | val_es=0.000314
+  AE epoch 140/300 | train=0.000262 | val_es=0.000303
+  AE epoch 160/300 | train=0.000255 | val_es=0.000299
+  AE epoch 180/300 | train=0.000254 | val_es=0.000296
+  AE epoch 200/300 | train=0.000249 | val_es=0.000291
+  AE epoch 220/300 | train=0.000247 | val_es=0.000297
+  Early stopping at epoch 229.
+  SubAE epoch 001/200 | train=0.062434 | val_es=0.023207
+  SubAE epoch 020/200 | train=0.001422 | val_es=0.001417
+  SubAE epoch 040/200 | train=0.000595 | val_es=0.000607
+  SubAE epoch 060/200 | train=0.000543 | val_es=0.000562
+  SubAE epoch 080/200 | train=0.000531 | val_es=0.000547
+  SubAE epoch 100/200 | train=0.000524 | val_es=0.000540
+  SubAE epoch 120/200 | train=0.000520 | val_es=0.000540
+  SubAE epoch 140/200 | train=0.000501 | val_es=0.000518
+  SubAE epoch 160/200 | train=0.000498 | val_es=0.000514
+  SubAE epoch 180/200 | train=0.000496 | val_es=0.000518
+  SubAE epoch 200/200 | train=0.000495 | val_es=0.000511
+  [!] Sub-AE reached the cap of 200 epochs.
+  Per-sub-AE validation MSE: min=0.00006 max=0.00078 ratio=13.81x
+  OutAE epoch 001/200 | train=0.226323 | val_es=0.175972
+  OutAE epoch 020/200 | train=0.001102 | val_es=0.001146
+  OutAE epoch 040/200 | train=0.000608 | val_es=0.000802
+  OutAE epoch 060/200 | train=0.000499 | val_es=0.000698
+  OutAE epoch 080/200 | train=0.000380 | val_es=0.000531
+  OutAE epoch 100/200 | train=0.000360 | val_es=0.000514
+  OutAE epoch 120/200 | train=0.000353 | val_es=0.000504
+  OutAE epoch 140/200 | train=0.000350 | val_es=0.000500
+  OutAE epoch 160/200 | train=0.000347 | val_es=0.000495
+  OutAE epoch 180/200 | train=0.000345 | val_es=0.000493
+  Output-AE early stopping at epoch 199.
+  AE epoch 001/300 | train=0.040054 | val_es=0.011659
+  AE epoch 020/300 | train=0.000574 | val_es=0.000582
+  AE epoch 040/300 | train=0.000380 | val_es=0.000412
+  AE epoch 060/300 | train=0.000318 | val_es=0.000353
+  AE epoch 080/300 | train=0.000299 | val_es=0.000338
+  AE epoch 100/300 | train=0.000286 | val_es=0.000337
+  AE epoch 120/300 | train=0.000278 | val_es=0.000321
+  AE epoch 140/300 | train=0.000264 | val_es=0.000304
+  AE epoch 160/300 | train=0.000263 | val_es=0.000302
+  AE epoch 180/300 | train=0.000261 | val_es=0.000306
+  AE epoch 200/300 | train=0.000260 | val_es=0.000300
+  Early stopping at epoch 200.
+  AE epoch 001/300 | train=0.034129 | val_es=0.009187
+  AE epoch 020/300 | train=0.000508 | val_es=0.000501
+  AE epoch 040/300 | train=0.000295 | val_es=0.000327
+  AE epoch 060/300 | train=0.000263 | val_es=0.000302
+  AE epoch 080/300 | train=0.000254 | val_es=0.000293
+  AE epoch 100/300 | train=0.000244 | val_es=0.000284
+  AE epoch 120/300 | train=0.000236 | val_es=0.000283
+  AE epoch 140/300 | train=0.000230 | val_es=0.000271
+  AE epoch 160/300 | train=0.000225 | val_es=0.000297
+  AE epoch 180/300 | train=0.000220 | val_es=0.000290
+  AE epoch 200/300 | train=0.000215 | val_es=0.000258
+  AE epoch 220/300 | train=0.000210 | val_es=0.000253
+  AE epoch 240/300 | train=0.000202 | val_es=0.000245
+  AE epoch 260/300 | train=0.000197 | val_es=0.000250
+  AE epoch 280/300 | train=0.000195 | val_es=0.000230
+  AE epoch 300/300 | train=0.000190 | val_es=0.000232
+  [!] AE reached the 300-epoch cap without early stopping.
+Mean ± std across seeds:
+  Isolation Forest                   | Acc 0.5844 ± 0.0197 | MCC 0.2908 ± 0.0326 | Recall 0.3008 ± 0.0373 | FPR 0.0682 ± 0.0040
+  One-Class SVM                      | Acc 0.7827 ± 0.0029 | MCC 0.6003 ± 0.0072 | Recall 0.6667 ± 0.0004 | FPR 0.0753 ± 0.0061
+  Random-Subspace Ensemble           | Acc 0.6948 ± 0.0715 | MCC 0.4692 ± 0.1071 | Recall 0.4983 ± 0.1349 | FPR 0.0646 ± 0.0105
+  Autoencoder (unsupervised)         | Acc 0.7973 ± 0.0055 | MCC 0.6184 ± 0.0082 | Recall 0.7059 ± 0.0124 | FPR 0.0906 ± 0.0044
+  Autoencoder (label-tuned control)  | Acc 0.7998 ± 0.0061 | MCC 0.6238 ± 0.0181 | Recall 0.7080 ± 0.0107 | FPR 0.0877 ± 0.0248
+  Hybrid with rules zeroed           | Acc 0.7883 ± 0.0287 | MCC 0.6167 ± 0.0440 | Recall 0.6637 ± 0.0532 | FPR 0.0589 ± 0.0037
+  Hybrid (locked fusion)             | Acc 0.7890 ± 0.0269 | MCC 0.6171 ± 0.0413 | Recall 0.6661 ± 0.0503 | FPR 0.0604 ± 0.0042
+
+Paired per-seed MCC differences (mean ± std):
+  Hybrid - Zeroed    | +0.0004 ± 0.0028
+  Hybrid - Control   | -0.0067 ± 0.0369
+  Hybrid - AE        | -0.0013 ± 0.0391
+
+Unseen-indicator ablation (mean ± std across seeds):
+  AE with indicators    MCC = 0.6184 ± 0.0082
+  AE without indicators MCC = 0.6261 ± 0.0057
+  Mean delta            = -0.0077 ± 0.0111
+
+================================================================================
+DEDUPLICATED-TEST SENSITIVITY
+================================================================================
+Full test set       : 82,332 rows (attack prevalence 0.5506)
+Model-visible unique: 53,946 rows (attack prevalence 0.3660)
+                            Model  Accuracy  Macro_F1    MCC  ROC_AUC  Average_Precision  Recall    FPR
+                 Isolation Forest    0.6517    0.4934 0.1489   0.6735             0.5440  0.1266 0.0452
+                    One-Class SVM    0.7125    0.6255 0.3449   0.6594             0.5836  0.3147 0.0578
+               Single Autoencoder    0.7334    0.6722 0.3969   0.7679             0.6788  0.4116 0.0809
+Autoencoder (label-tuned control)    0.7377    0.6683 0.4112   0.7679             0.6788  0.3828 0.0574
+                         Ensemble    0.6776    0.5644 0.2421   0.4825             0.4825  0.2293 0.0635
+         Hybrid with rules zeroed    0.7379    0.6663 0.4128   0.7679             0.6788  0.3754 0.0528
+                           Hybrid    0.7373    0.6663 0.4108   0.7655             0.6769  0.3772 0.0548
+                  RF (supervised)    0.8204    0.8183 0.6805   0.9599             0.9362  0.9732 0.2679
+
+================================================================================
+SAVE ARTIFACTS
+================================================================================
+
+================================================================================
+RELOAD SMOKE TEST
+================================================================================
+  Preprocessor reload matches original features.
+  Autoencoder reload reproduces test MSE.
+  Ensemble reload reproduces test MSE (using saved subspaces).
+
+================================================================================
+ARTIFACT VERIFICATION
+================================================================================
+  requirements.txt                           [158 bytes]
+  preprocessor.joblib                        [6,428 bytes]
+  rf_preprocessor.joblib                     [7,424 bytes]
+  feature_names.json                         [1,281 bytes]
+  data_manifest.json                         [2,829 bytes]
+  baseline_config.json                       [497 bytes]
+  experiment_config.json                     [36,940 bytes]
+  thresholds.json                            [398 bytes]
+  train_indices.npy                          [1,200,856 bytes]
+  val_es_indices.npy                         [102,040 bytes]
+  val_rules_indices.npy                      [49,344 bytes]
+  val_fusion_indices.npy                     [51,000 bytes]
+  ocsvm_subsample_positions.npy              [80,128 bytes]
+  ocsvm_subsample_original_ids.npy           [80,128 bytes]
+  ensemble_subspace_indices.npy              [1,057 bytes]
+  autoencoder_state_dict.pt                  [24,799 bytes]
+  ensemble_state_dict.pt                     [30,625 bytes]
+  rf_comparator.joblib                       [36,821,788 bytes]
+  rule_validation_search.csv                 [787 bytes]
+  fusion_validation_search.csv               [4,278 bytes]
+  final_experimental_results.csv             [3,418 bytes]
+  multi_seed_sensitivity.csv                 [5,833 bytes]
+  multi_seed_paired_deltas.csv               [389 bytes]
+  unseen_indicator_ablation.csv              [888 bytes]
+  test_dedup_sensitivity.csv                 [597 bytes]
+  attack_category_results.csv                [742 bytes]
+
+Reload smoke test: PASSED
+Pipeline finished. 26 artifacts verified.
