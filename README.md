@@ -277,14 +277,18 @@ COMP1818-NIDS-Project/
 ├── nids_pipeline.ipynb       # Colab notebook with the saved run output
 ├── data/
 │   └── README.md             # where to place the dataset CSVs
-└── artifacts/
-    ├── README.md             # description of every output file
-    ├── run_log.txt           # console output of the reported run
-    ├── *.csv, *.json         # results, configuration, thresholds
-    ├── autoencoder_state_dict.pt
-    ├── ensemble_state_dict.pt
-    ├── preprocessor.joblib
-    └── rf_preprocessor.joblib
+├── artifacts/
+│   ├── README.md             # description of every output file
+│   ├── run_log.txt           # console output of the reported run
+│   ├── *.csv, *.json         # results, configuration, thresholds
+│   ├── *.npy                 # split, subsample and ensemble indices
+│   ├── autoencoder_state_dict.pt
+│   ├── ensemble_state_dict.pt
+│   ├── preprocessor.joblib
+│   └── rf_preprocessor.joblib
+└── report/
+    ├── README.md
+    └── references_AI.bib     # bibliography of the LaTeX report
 ```
 
 ## Installation
@@ -391,17 +395,9 @@ University of Greenwich.
 
 ## AI use declaration
 
-<!-- Keep this identical in substance to the declaration in the submitted report.
-     Edit any line that does not match exactly what happened. -->
-
-Generative AI assisted in debugging pipeline code, conducting
-methodological reviews, and polishing report drafts. To maintain strict
-academic integrity, I independently verified every AI contribution by
-re-running the complete experimental pipeline and cross-checking
-all reported figures directly against generated output files. Through
-this auditing, I identified and fixed significant AI errors, including
-an unhandled id column that masked feature-vector duplicates and
-incorrect threshold unit conversions within the multi-seed control
-loop. Ultimately, this process taught me that while AI accelerates
-prototyping, rigorous empirical validation and independent analytical
-scrutiny remain irreplaceable in research. in `artifacts/run_log.txt`.
+Generative AI was used to generate and debug parts of the pipeline code, to
+review the experimental methodology, and to give feedback on drafts of the
+report and this README. AI-assisted review flagged errors that I then
+verified and corrected, including an `id` column that hid feature-vector
+duplicates and incorrect threshold units in the multi-seed control. All
+reported numbers come from the saved run in `artifacts/run_log.txt`.
