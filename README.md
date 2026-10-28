@@ -1,4 +1,3 @@
-markdown
 <div align="center">
 
 # Neuro-Symbolic Network Anomaly Detection on UNSW-NB15
