@@ -6,8 +6,8 @@
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/Framework-PyTorch-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![Dataset](https://img.shields.io/badge/Dataset-UNSW--NB15-2563EB)](https://research.unsw.edu.au/projects/unsw-nb15-dataset)
-[![Course](https://img.shields.io/badge/Course-COMP1818-6D28D9)](#)
+[![Dataset](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
+
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 **University of Greenwich · COMP1818 Artificial Intelligence Applications**
