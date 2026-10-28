@@ -6,8 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/Framework-PyTorch-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![Dataset](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
-
+[![Dataset](https://img.shields.io/badge/Dataset-UNSW--NB15-20BEFF?logo=kaggle&logoColor=white)](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 **University of Greenwich · COMP1818 Artificial Intelligence Applications**
@@ -241,12 +240,11 @@ to the unsupervised models.
 
 ### Dataset source
 
-- Official source: [UNSW-NB15 dataset page](https://research.unsw.edu.au/projects/unsw-nb15-dataset)
-- Alternative mirror: [UNSW-NB15 on Kaggle](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
+- Used for this project: [UNSW-NB15 on Kaggle](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
+- Original source: [UNSW-NB15 dataset page (UNSW Canberra)](https://research.unsw.edu.au/projects/unsw-nb15-dataset)
 
-Prefer the official source. The dataset is **not** included in this
-repository; check its usage conditions and citation requirements before any
-redistribution.
+The dataset is **not** included in this repository; check its usage
+conditions and citation requirements before any redistribution.
 
 ### Duplicate-record audit
 
@@ -306,12 +304,14 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 ## Dataset setup
 
 1. Download `UNSW_NB15_training-set.csv` and `UNSW_NB15_testing-set.csv`
-   from the official source.
+   from the [Kaggle copy](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
+   used for this project (or from the original UNSW source).
 2. Place both files in `data/`.
 
-Some mirrors swap the two filenames. The pipeline detects this from the row
-counts (175,341 training / 82,332 testing) and prints a warning, so the
-files can be used as downloaded. It also prints the SHA-256 hash of each
+In the Kaggle copy the two filenames are swapped relative to the official
+split (`UNSW_NB15_training-set.csv` has 82,332 rows). The pipeline detects
+this from the row counts (175,341 training / 82,332 testing) and prints a
+warning, so the files can be used as downloaded. It also prints the SHA-256 hash of each
 file; the reported run used:
 
 | File role | SHA-256 |
