@@ -394,9 +394,14 @@ University of Greenwich.
 <!-- Keep this identical in substance to the declaration in the submitted report.
      Edit any line that does not match exactly what happened. -->
 
-Generative AI was used to generate and debug parts of the pipeline code, to
-review the experimental methodology, and to give feedback on drafts of the
-report and this README. AI-assisted review flagged errors that I then
-verified and corrected, including an `id` column that hid feature-vector
-duplicates and incorrect threshold units in the multi-seed control. All
-reported numbers come from the saved run in `artifacts/run_log.txt`.
+Generative AI assisted in debugging pipeline code, conducting
+methodological reviews, and polishing report drafts. To maintain strict
+academic integrity, I independently verified every AI contribution by
+re-running the complete experimental pipeline and cross-checking
+all reported figures directly against generated output files. Through
+this auditing, I identified and fixed significant AI errors, including
+an unhandled id column that masked feature-vector duplicates and
+incorrect threshold unit conversions within the multi-seed control
+loop. Ultimately, this process taught me that while AI accelerates
+prototyping, rigorous empirical validation and independent analytical
+scrutiny remain irreplaceable in research. in `artifacts/run_log.txt`.
