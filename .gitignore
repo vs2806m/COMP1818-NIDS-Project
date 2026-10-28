@@ -1,0 +1,19 @@
+# Dataset (not redistributed)
+data/*.csv
+*.zip
+
+# Large regenerable model
+artifacts/rf_comparator.joblib
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
