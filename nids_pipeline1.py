@@ -1,0 +1,1772 @@
+"""
+Hybrid anomaly-detection experiments on UNSW-NB15.
+
+The pipeline compares classical novelty-detection baselines, a
+conventional deep autoencoder, a random-subspace autoencoder ensemble
+inspired by KitNET but not a reproduction of it, a small symbolic rule
+layer, and a validation-selected fusion of the autoencoder and rules.
+
+The official UNSW-NB15 train/test split is kept as the primary benchmark.
+The training file is internally partitioned into four groups — model
+fitting, early stopping, rule selection, and fusion selection — that
+share no model-visible feature vector.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import random
+import sys
+from pathlib import Path
+
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+import joblib
+import numpy as np
+import pandas as pd
+import sklearn
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from packaging import version
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score, average_precision_score, confusion_matrix,
+    f1_score, matthews_corrcoef, precision_score, recall_score, roc_auc_score,
+)
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.svm import OneClassSVM
+from torch.utils.data import DataLoader, TensorDataset
+
+
+# -----------------------------------------------------------------------------
+# Config
+# -----------------------------------------------------------------------------
+CONFIG = {
+    "seed": 42,
+    "validation_fraction": 0.15,
+    "val_es_fraction": 0.50,
+    "val_rules_fraction": 0.25,
+    "val_fusion_fraction": 0.25,
+
+    "ae_hidden": 32,
+    "ae_latent": 16,
+    "learning_rate": 1e-3,
+    "weight_decay": 1e-5,
+    "batch_size": 256,
+    "ae_epochs": 300,
+    "ae_patience": 25,
+
+    # Ensemble: each sub-AE gets at most ensemble_subspace_max features.
+    # The requested number of subspaces is a target; the actual number is
+    # ceil(n_features / subspace_max). Latent width 4 and LeakyReLU activations
+    # reduce the dying-ReLU problem observed with latent=2 and ReLU.
+    "ensemble_preferred_subspaces": 8,
+    "ensemble_subspace_max": 8,
+    "ensemble_sub_hidden": 8,
+    "ensemble_sub_latent": 4,
+    "ensemble_out_hidden": 4,
+    "ensemble_sub_epochs": 200,
+    "ensemble_sub_patience": 20,
+    "ensemble_out_epochs": 200,
+    "ensemble_out_patience": 20,
+
+    "threshold_percentile": 95,
+    "use_clipping": False,
+
+    "fusion_alphas": [0.4, 0.5, 0.6, 0.7],
+    "fusion_gammas": [0.0, 0.05, 0.1],
+    "fusion_thresholds": [0.8, 0.9, 1.0, 1.1, 1.2],
+
+    "rule_grid_percentiles": [90, 95, 97, 99],
+    "rule_grid_durations": [0.05, 0.1, 0.25, 0.5],
+    "rule_fpr_cap": 0.02,
+
+    "ocsvm_max_samples": 10000,
+    "ocsvm_kernel": "rbf",
+    "ocsvm_gamma": "scale",
+    "ocsvm_nu": 0.05,
+    "iso_n_estimators": 100,
+    "rf_n_estimators": 200,
+
+    # Five seeds give a reasonable paired standard deviation.
+    "sensitivity_seeds": [42, 7, 123, 2024, 99],
+}
+
+CATEGORICAL_COLS = ["proto", "service", "state"]
+HEAVY_TAILED_COLS = ["sload", "dload", "rate", "sbytes", "dbytes"]
+
+DROP_COLUMNS = ["id", "attack_cat", "sttl", "ct_state_ttl", "stcpb", "dtcpb"]
+DROP_REASONS = {
+    "id": "row identifier",
+    "attack_cat": "target-derived; would leak the binary label",
+    "sttl": "TTL reflects the fixed testbed topology rather than attack behaviour",
+    "ct_state_ttl": "same topology dependence as sttl",
+    "stcpb": "TCP base sequence number; per-flow random identifier",
+    "dtcpb": "TCP base sequence number; per-flow random identifier",
+}
+
+RULE_RATIONALE = {
+    "r1": "high packet rate + short duration",
+    "r2": "asymmetric upload/download byte ratio in log space",
+    "r3": "many connections to same service from same source + short duration",
+}
+
+EXPECTED_TRAIN_ROWS = 175_341
+EXPECTED_TEST_ROWS = 82_332
+
+
+# -----------------------------------------------------------------------------
+# Device and seeds
+# -----------------------------------------------------------------------------
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def set_seeds(seed: int) -> None:
+    """Set seeds for Python, NumPy and PyTorch.
+
+    Note: PYTHONHASHSEED only takes effect if set before the interpreter
+    starts. Setting it here documents the intended policy but does not
+    retroactively affect hash randomisation.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except RuntimeError as exc:
+        print(f"[!] Deterministic-algorithm warning: {exc}")
+
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def count_csv_rows(path: Path) -> int:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return sum(1 for _ in f) - 1
+
+
+def binary_metrics(y_true, y_pred):
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return {
+        "Accuracy": float(accuracy_score(y_true, y_pred)),
+        "Macro_F1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        "MCC": float(matthews_corrcoef(y_true, y_pred)),
+        "Precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "Recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "FPR": float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0,
+        "TP": int(tp), "TN": int(tn), "FP": int(fp), "FN": int(fn),
+    }
+
+
+def safe_auc(y_true, y_score, label=""):
+    """Return ROC-AUC and Average Precision, or (NaN, NaN) with a reason."""
+    y_true = np.asarray(y_true)
+    y_score = np.asarray(y_score)
+    if len(np.unique(y_true)) < 2:
+        if label:
+            print(f"  [i] AUC not defined for {label}: only one class in y_true")
+        return np.nan, np.nan
+    if len(np.unique(y_score)) < 2:
+        if label:
+            print(f"  [i] AUC not defined for {label}: score is constant")
+        return np.nan, np.nan
+    return (float(roc_auc_score(y_true, y_score)),
+            float(average_precision_score(y_true, y_score)))
+
+
+def check_binary_split(name: str, y: np.ndarray) -> None:
+    labels = np.unique(y)
+    if not np.array_equal(labels, np.array([0, 1])):
+        raise ValueError(f"{name} does not contain both classes: {labels}")
+    print(f"  {name:<11} | {len(y):>7,} rows | "
+          f"normal={(y == 0).sum():>6,} attack={(y == 1).sum():>6,}")
+
+
+# -----------------------------------------------------------------------------
+# Data loading
+# -----------------------------------------------------------------------------
+def load_and_verify_data(data_dir: Path):
+    file_a = data_dir / "UNSW_NB15_training-set.csv"
+    file_b = data_dir / "UNSW_NB15_testing-set.csv"
+    if not (file_a.exists() and file_b.exists()):
+        raise FileNotFoundError(f"Dataset CSVs not found under {data_dir}")
+
+    rows_a = count_csv_rows(file_a)
+    rows_b = count_csv_rows(file_b)
+
+    if rows_a == EXPECTED_TRAIN_ROWS and rows_b == EXPECTED_TEST_ROWS:
+        train_path, test_path = file_a, file_b
+    elif rows_a == EXPECTED_TEST_ROWS and rows_b == EXPECTED_TRAIN_ROWS:
+        train_path, test_path = file_b, file_a
+        print("[!] Local filenames are reversed relative to official split sizes.")
+    else:
+        raise RuntimeError(
+            f"Row counts ({rows_a}, {rows_b}) don't match the official split "
+            f"({EXPECTED_TRAIN_ROWS}, {EXPECTED_TEST_ROWS})."
+        )
+
+    train_df = pd.read_csv(train_path)
+    test_df = pd.read_csv(test_path)
+
+    required = {"label", "proto", "service", "state", "dur", "rate",
+                "sload", "dload", "ct_srv_src"}
+    missing = (required - set(train_df.columns)) | (required - set(test_df.columns))
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    if len(train_df) != EXPECTED_TRAIN_ROWS or len(test_df) != EXPECTED_TEST_ROWS:
+        raise RuntimeError("Row counts changed after loading.")
+    if not train_df["label"].isin([0, 1]).all():
+        raise ValueError("Training labels must be binary.")
+    if not test_df["label"].isin([0, 1]).all():
+        raise ValueError("Test labels must be binary.")
+    if not np.isfinite(train_df.select_dtypes(include=[np.number]).to_numpy()).all():
+        raise ValueError("Non-finite values in training data.")
+    if not np.isfinite(test_df.select_dtypes(include=[np.number]).to_numpy()).all():
+        raise ValueError("Non-finite values in test data.")
+
+    provenance = {
+        "train_path": str(train_path),
+        "test_path": str(test_path),
+        "train_sha256": sha256_file(train_path),
+        "test_sha256": sha256_file(test_path),
+        "train_rows": int(len(train_df)),
+        "test_rows": int(len(test_df)),
+    }
+
+    print(f"Training file: {train_path.name}  ({len(train_df):,} rows)")
+    print(f"Testing  file: {test_path.name}   ({len(test_df):,} rows)")
+    print(f"Training SHA256: {provenance['train_sha256']}")
+    print(f"Testing  SHA256: {provenance['test_sha256']}")
+    print(f"Training labels: {train_df['label'].value_counts().to_dict()}")
+    print(f"Testing  labels: {test_df['label'].value_counts().to_dict()}")
+
+    return train_df, test_df, provenance
+
+
+def audit_data_quality(train_df, test_df):
+    raw_cols = [c for c in train_df.columns if c not in ("id", "label")]
+    model_cols = [c for c in train_df.columns
+                  if c not in DROP_COLUMNS and c != "label"]
+
+    raw_train = pd.util.hash_pandas_object(train_df[raw_cols], index=False)
+    raw_test = pd.util.hash_pandas_object(test_df[raw_cols], index=False)
+    model_train = pd.util.hash_pandas_object(train_df[model_cols], index=False)
+    model_test = pd.util.hash_pandas_object(test_df[model_cols], index=False)
+
+    audit = {
+        "raw_duplicates_train": int(raw_train.duplicated().sum()),
+        "raw_duplicates_test": int(raw_test.duplicated().sum()),
+        "raw_cross_split_overlap": int(
+            len(set(raw_train.tolist()) & set(raw_test.tolist()))),
+        "model_duplicates_train": int(model_train.duplicated().sum()),
+        "model_duplicates_test": int(model_test.duplicated().sum()),
+        "model_cross_split_overlap": int(
+            len(set(model_train.tolist()) & set(model_test.tolist()))),
+        "model_visible_columns": model_cols,
+    }
+
+    tmp = pd.DataFrame({
+        "group_hash": model_train.to_numpy(),
+        "label": train_df["label"].to_numpy(),
+    })
+    conflicting = tmp.groupby("group_hash")["label"].nunique().gt(1).sum()
+    audit["model_conflicting_label_groups"] = int(conflicting)
+
+    print(f"Raw-schema duplicates (train/test)     : "
+          f"{audit['raw_duplicates_train']:,} / {audit['raw_duplicates_test']:,}")
+    print(f"Raw cross-split overlaps               : "
+          f"{audit['raw_cross_split_overlap']:,}")
+    print(f"Model-visible duplicates (train/test)  : "
+          f"{audit['model_duplicates_train']:,} / {audit['model_duplicates_test']:,}")
+    print(f"Model-visible cross-split overlaps     : "
+          f"{audit['model_cross_split_overlap']:,}")
+    print(f"Model-visible conflicting-label groups : "
+          f"{audit['model_conflicting_label_groups']:,}")
+
+    return audit
+
+
+# -----------------------------------------------------------------------------
+# Splits
+# -----------------------------------------------------------------------------
+def group_aware_splits(train_df, y_train_full, drop_columns):
+    visible_cols = [c for c in train_df.columns
+                    if c not in drop_columns and c != "label"]
+    group_hash = pd.util.hash_pandas_object(train_df[visible_cols], index=False).values
+    all_idx = np.arange(len(train_df))
+
+    gss_outer = GroupShuffleSplit(
+        n_splits=1,
+        test_size=CONFIG["validation_fraction"],
+        random_state=CONFIG["seed"],
+    )
+    train_pos, val_pool_pos = next(
+        gss_outer.split(all_idx, y_train_full, groups=group_hash))
+    train_idx = all_idx[train_pos]
+    val_pool_idx = all_idx[val_pool_pos]
+
+    gss_es = GroupShuffleSplit(
+        n_splits=1,
+        test_size=1 - CONFIG["val_es_fraction"],
+        random_state=CONFIG["seed"] + 1,
+    )
+    es_pos, rest_pos = next(
+        gss_es.split(val_pool_idx, y_train_full[val_pool_idx],
+                     groups=group_hash[val_pool_idx]))
+    val_es_idx = val_pool_idx[es_pos]
+    val_rest_idx = val_pool_idx[rest_pos]
+
+    rest_fraction = (CONFIG["val_fusion_fraction"] /
+                     (CONFIG["val_rules_fraction"] + CONFIG["val_fusion_fraction"]))
+    gss_rest = GroupShuffleSplit(
+        n_splits=1,
+        test_size=rest_fraction,
+        random_state=CONFIG["seed"] + 2,
+    )
+    rules_pos, fusion_pos = next(
+        gss_rest.split(val_rest_idx, y_train_full[val_rest_idx],
+                       groups=group_hash[val_rest_idx]))
+    val_rules_idx = val_rest_idx[rules_pos]
+    val_fusion_idx = val_rest_idx[fusion_pos]
+
+    subsets = {
+        "train": train_idx, "val_es": val_es_idx,
+        "val_rules": val_rules_idx, "val_fusion": val_fusion_idx,
+    }
+
+    keys = list(subsets.keys())
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            a = set(group_hash[subsets[keys[i]]])
+            b = set(group_hash[subsets[keys[j]]])
+            if a & b:
+                raise AssertionError(f"Group overlap between {keys[i]} and {keys[j]}")
+
+    for name, idx in subsets.items():
+        check_binary_split(name, y_train_full[idx])
+
+    return {**subsets, "group_hash": group_hash}
+
+
+# -----------------------------------------------------------------------------
+# Preprocessing
+# -----------------------------------------------------------------------------
+def make_one_hot_encoder():
+    if version.parse(sklearn.__version__) >= version.parse("1.2"):
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+
+def build_preprocessor(numerical_cols, indicator_cols, with_indicators=True):
+    transformers = [
+        ("num", MinMaxScaler(), numerical_cols),
+        ("cat", make_one_hot_encoder(), CATEGORICAL_COLS),
+    ]
+    if with_indicators:
+        transformers.append(("unseen", "passthrough", indicator_cols))
+    return ColumnTransformer(transformers)
+
+
+def add_unseen_indicators(df, valid_categories):
+    out = df.copy()
+    for col in CATEGORICAL_COLS:
+        out[f"__unseen_{col}"] = (~out[col].isin(valid_categories[col])).astype(int)
+    return out
+
+
+def prepare_features(train_df, test_df, splits, drop_columns):
+    present = [c for c in drop_columns if c in train_df.columns]
+    train_clean = train_df.drop(columns=present).copy()
+    test_clean = test_df.drop(columns=present).copy()
+
+    y_train_full = train_clean["label"].values
+    y_test = test_clean["label"].values
+
+    train_ml = train_clean.drop(columns=["label"]).copy()
+    test_ml = test_clean.drop(columns=["label"]).copy()
+    for col in HEAVY_TAILED_COLS:
+        if col in train_ml.columns:
+            train_ml[col] = np.log1p(train_ml[col].values)
+            test_ml[col] = np.log1p(test_ml[col].values)
+
+    train_idx = splits["train"]
+    normal_mask = (y_train_full[train_idx] == 0)
+
+    train_sub = train_ml.iloc[train_idx].copy()
+    val_es_sub = train_ml.iloc[splits["val_es"]].copy()
+    val_rules_sub = train_ml.iloc[splits["val_rules"]].copy()
+    val_fusion_sub = train_ml.iloc[splits["val_fusion"]].copy()
+
+    valid_categories = {
+        col: set(train_sub.loc[normal_mask, col].dropna().unique())
+        for col in CATEGORICAL_COLS
+    }
+
+    train_aug = add_unseen_indicators(train_sub, valid_categories)
+    val_es_aug = add_unseen_indicators(val_es_sub, valid_categories)
+    val_rules_aug = add_unseen_indicators(val_rules_sub, valid_categories)
+    val_fusion_aug = add_unseen_indicators(val_fusion_sub, valid_categories)
+    test_aug = add_unseen_indicators(test_ml, valid_categories)
+
+    numerical_cols = [c for c in train_sub.columns if c not in CATEGORICAL_COLS]
+    indicator_cols = [f"__unseen_{c}" for c in CATEGORICAL_COLS]
+
+    preprocessor = build_preprocessor(numerical_cols, indicator_cols,
+                                       with_indicators=True)
+    preprocessor.fit(train_aug[normal_mask])
+
+    bundle = {
+        "y_train_full": y_train_full, "y_test": y_test,
+        "y_train": y_train_full[train_idx],
+        "y_val_es": y_train_full[splits["val_es"]],
+        "y_val_rules": y_train_full[splits["val_rules"]],
+        "y_val_fusion": y_train_full[splits["val_fusion"]],
+        "normal_train_mask": normal_mask,
+        "preprocessor": preprocessor,
+        "numerical_cols": numerical_cols,
+        "indicator_cols": indicator_cols,
+        "dropped_columns": present,
+        "train_aug": train_aug, "val_es_aug": val_es_aug,
+        "val_rules_aug": val_rules_aug, "val_fusion_aug": val_fusion_aug,
+        "test_aug": test_aug,
+    }
+    for key, frame in [("train", train_aug), ("val_es", val_es_aug),
+                       ("val_rules", val_rules_aug),
+                       ("val_fusion", val_fusion_aug), ("test", test_aug)]:
+        bundle[f"X_{key}"] = preprocessor.transform(frame)
+
+    bundle["n_features"] = bundle["X_train"].shape[1]
+    bundle["train_normal"] = bundle["X_train"][normal_mask]
+
+    print(f"Transformed feature dimension: {bundle['n_features']}")
+    print(f"Normal training rows         : {normal_mask.sum():,}")
+
+    return bundle
+
+
+# -----------------------------------------------------------------------------
+# Symbolic rules
+# -----------------------------------------------------------------------------
+def extract_rules(df, cfg, thresholds=None):
+    dur = df["dur"].to_numpy(dtype=float)
+    rate = df["rate"].to_numpy(dtype=float)
+    sload = df["sload"].to_numpy(dtype=float)
+    dload = df["dload"].to_numpy(dtype=float)
+    ct_srv_src = (df["ct_srv_src"].to_numpy(dtype=float)
+                  if "ct_srv_src" in df.columns else np.zeros(len(df)))
+    log_ratio = np.log1p(sload) - np.log1p(dload)
+
+    if thresholds is None:
+        thresholds = {
+            "rate": float(np.percentile(rate, cfg["rate_percentile"])),
+            "log_ratio": float(np.percentile(log_ratio, cfg["ratio_percentile"])),
+            "ct": float(np.percentile(ct_srv_src, cfg["ct_srv_src_percentile"])),
+        }
+
+    r1 = ((rate > thresholds["rate"]) & (dur < cfg["short_duration_r1"])).astype(int)
+    r2 = (log_ratio > thresholds["log_ratio"]).astype(int)
+    r3 = ((ct_srv_src > thresholds["ct"]) & (dur < cfg["short_duration_r3"])).astype(int)
+    return np.clip(r1 + r2 + r3, 0, 1), thresholds
+
+
+def select_rule_config(train_raw_normal, val_rules_raw, val_rules_y):
+    rows = []
+    for rp in CONFIG["rule_grid_percentiles"]:
+        for dp in CONFIG["rule_grid_durations"]:
+            cfg = {
+                "rate_percentile": rp, "ratio_percentile": rp,
+                "ct_srv_src_percentile": rp,
+                "short_duration_r1": dp, "short_duration_r3": dp,
+            }
+            _, thr = extract_rules(train_raw_normal, cfg)
+            scores, _ = extract_rules(val_rules_raw, cfg, thr)
+            normal = scores[val_rules_y == 0]
+            attack = scores[val_rules_y == 1]
+            rows.append({
+                "rate_pct": rp, "dur_bound": dp,
+                "val_fpr": float(np.mean(normal > 0)),
+                "val_attack_recall": float(np.mean(attack > 0)),
+                "_cfg": cfg, "_thr": thr,
+            })
+
+    df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")}
+                       for r in rows])
+    df.to_csv("rule_validation_search.csv", index=False)
+
+    feasible = [r for r in rows if r["val_fpr"] <= CONFIG["rule_fpr_cap"]]
+    if not feasible:
+        print(f"[!] No rule config meets the {CONFIG['rule_fpr_cap']:.0%} FPR cap.")
+        print("    Falling back to the lowest-FPR configuration.")
+        chosen = min(rows, key=lambda r: r["val_fpr"])
+    else:
+        chosen = max(feasible, key=lambda r: r["val_attack_recall"])
+
+    print(f"Selected rule config: percentiles={chosen['_cfg']['rate_percentile']}, "
+          f"duration={chosen['_cfg']['short_duration_r1']}")
+    print(f"  val_rules FPR={chosen['val_fpr']:.4%} | "
+          f"attack recall={chosen['val_attack_recall']:.4%}")
+    return chosen["_cfg"], chosen["_thr"], df
+
+
+# -----------------------------------------------------------------------------
+# Models
+# -----------------------------------------------------------------------------
+class DeepAutoencoder(nn.Module):
+    def __init__(self, input_dim, hidden, latent):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, latent), nn.ReLU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent, hidden), nn.ReLU(),
+            nn.Linear(hidden, input_dim),
+        )
+
+    def forward(self, x):
+        return self.decoder(self.encoder(x))
+
+
+class RandomSubspaceEnsemble(nn.Module):
+    """
+    Ensemble of small autoencoders on disjoint feature blocks, followed by
+    an output autoencoder on the reconstruction errors.
+
+    Inspired by KitNET but the feature map here is a random partition;
+    the paper uses correlation-based clustering. Not a faithful reproduction.
+
+    Sub-autoencoders use LeakyReLU activations instead of ReLU to reduce
+    dying-unit risk with a small latent width, and a latent of 4 instead of
+    2 to give enough capacity for the reconstruction.
+    """
+
+    def __init__(self, input_dim, preferred_subspaces, subspace_max,
+                 sub_hidden, sub_latent, out_hidden, seed,
+                 subspace_indices=None):
+        super().__init__()
+        if subspace_indices is not None:
+            subspaces = [np.asarray(idx, dtype=int) for idx in subspace_indices]
+        else:
+            rng = np.random.default_rng(seed)
+            perm = rng.permutation(input_dim)
+            chunk = min(int(np.ceil(input_dim / preferred_subspaces)), subspace_max)
+            subspaces = []
+            pos = 0
+            while pos < input_dim:
+                end = min(pos + chunk, input_dim)
+                subspaces.append(np.sort(perm[pos:end]))
+                pos = end
+
+        used = np.concatenate(subspaces)
+        assert len(used) == input_dim
+        assert len(set(used.tolist())) == input_dim
+
+        self.subspace_indices = subspaces
+        self.k = len(subspaces)
+        self.ensemble = nn.ModuleList()
+        for idx in subspaces:
+            d = len(idx)
+            self.ensemble.append(nn.Sequential(
+                nn.Linear(d, sub_hidden), nn.LeakyReLU(0.1),
+                nn.Linear(sub_hidden, sub_latent), nn.LeakyReLU(0.1),
+                nn.Linear(sub_latent, sub_hidden), nn.LeakyReLU(0.1),
+                nn.Linear(sub_hidden, d),
+            ))
+        self.output_ae = nn.Sequential(
+            nn.Linear(self.k, out_hidden), nn.ReLU(),
+            nn.Linear(out_hidden, self.k), nn.Sigmoid(),
+        )
+        self.register_buffer("err_min", torch.zeros(self.k))
+        self.register_buffer("err_max", torch.ones(self.k))
+
+    def raw_errors(self, x):
+        errs = []
+        for idx, ae in zip(self.subspace_indices, self.ensemble):
+            sub = x[:, idx]
+            errs.append(((sub - ae(sub)) ** 2).mean(dim=1, keepdim=True))
+        return torch.cat(errs, dim=1)
+
+    def per_sub_ae_mse(self, x):
+        """Return per-sub-AE reconstruction MSE on a batch."""
+        out = []
+        for idx, ae in zip(self.subspace_indices, self.ensemble):
+            sub = x[:, idx]
+            out.append(((sub - ae(sub)) ** 2).mean().item())
+        return out
+
+    def normalise(self, z):
+        return (z - self.err_min) / (self.err_max - self.err_min).clamp(min=1e-8)
+
+    def forward(self, x):
+        z = self.raw_errors(x)
+        z_n = self.normalise(z)
+        return z, z_n, self.output_ae(z_n)
+
+
+def train_autoencoder(seed, input_dim, train_data, val_data, epochs, patience):
+    set_seeds(seed)
+    model = DeepAutoencoder(input_dim, CONFIG["ae_hidden"],
+                            CONFIG["ae_latent"]).to(DEVICE)
+    opt = optim.Adam(model.parameters(), lr=CONFIG["learning_rate"],
+                     weight_decay=CONFIG["weight_decay"])
+    criterion = nn.MSELoss(reduction="none")
+
+    train_loader = DataLoader(
+        TensorDataset(torch.tensor(train_data, dtype=torch.float32)),
+        batch_size=CONFIG["batch_size"], shuffle=True,
+    )
+    val_tensor = torch.tensor(val_data, dtype=torch.float32).to(DEVICE)
+
+    best_val = float("inf")
+    best_state = None
+    no_improve = 0
+    train_hist, val_hist = [], []
+
+    for epoch in range(epochs):
+        model.train()
+        total = 0.0
+        for (xb,) in train_loader:
+            xb = xb.to(DEVICE)
+            opt.zero_grad()
+            loss = criterion(model(xb), xb).mean()
+            loss.backward()
+            opt.step()
+            total += loss.item() * len(xb)
+        train_loss = total / len(train_data)
+
+        model.eval()
+        with torch.no_grad():
+            val_loss = criterion(model(val_tensor), val_tensor).mean().item()
+
+        train_hist.append(train_loss)
+        val_hist.append(val_loss)
+
+        if val_loss < best_val:
+            best_val = val_loss
+            best_state = {k: v.detach().cpu().clone()
+                          for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (epoch + 1) % 20 == 0 or epoch == 0:
+            print(f"  AE epoch {epoch+1:03d}/{epochs} | "
+                  f"train={train_loss:.6f} | val_es={val_loss:.6f}")
+        if no_improve >= patience:
+            print(f"  Early stopping at epoch {epoch+1}.")
+            break
+    else:
+        print(f"  [!] AE reached the {epochs}-epoch cap without early stopping.")
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    model.eval()
+    return model, train_hist, val_hist
+
+
+def train_ensemble(seed, train_normal, val_normal, n_features):
+    set_seeds(seed)
+    model = RandomSubspaceEnsemble(
+        input_dim=n_features,
+        preferred_subspaces=CONFIG["ensemble_preferred_subspaces"],
+        subspace_max=CONFIG["ensemble_subspace_max"],
+        sub_hidden=CONFIG["ensemble_sub_hidden"],
+        sub_latent=CONFIG["ensemble_sub_latent"],
+        out_hidden=CONFIG["ensemble_out_hidden"],
+        seed=seed,
+    ).to(DEVICE)
+
+    train_tensor = torch.tensor(train_normal, dtype=torch.float32)
+    val_tensor = torch.tensor(val_normal, dtype=torch.float32).to(DEVICE)
+    loader = DataLoader(TensorDataset(train_tensor),
+                        batch_size=CONFIG["batch_size"], shuffle=True)
+
+    sub_opt = optim.Adam(model.ensemble.parameters(),
+                         lr=CONFIG["learning_rate"],
+                         weight_decay=CONFIG["weight_decay"])
+    best_val = float("inf")
+    best_state = None
+    no_improve = 0
+    sub_train_hist, sub_val_hist = [], []
+
+    for epoch in range(CONFIG["ensemble_sub_epochs"]):
+        model.train()
+        total = 0.0
+        for (xb,) in loader:
+            xb = xb.to(DEVICE)
+            sub_opt.zero_grad()
+            loss = sum(((xb[:, idx] - ae(xb[:, idx])) ** 2).mean()
+                       for idx, ae in zip(model.subspace_indices, model.ensemble))
+            loss = loss / len(model.subspace_indices)
+            loss.backward()
+            sub_opt.step()
+            total += loss.item() * len(xb)
+        train_loss = total / len(train_normal)
+
+        model.eval()
+        with torch.no_grad():
+            val_loss = sum(
+                ((val_tensor[:, idx] - ae(val_tensor[:, idx])) ** 2).mean().item()
+                for idx, ae in zip(model.subspace_indices, model.ensemble)
+            ) / len(model.subspace_indices)
+
+        sub_train_hist.append(train_loss)
+        sub_val_hist.append(val_loss)
+
+        if val_loss < best_val:
+            best_val = val_loss
+            best_state = {k: v.detach().cpu().clone()
+                          for k, v in model.ensemble.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (epoch + 1) % 20 == 0 or epoch == 0:
+            print(f"  SubAE epoch {epoch+1:03d}/{CONFIG['ensemble_sub_epochs']} | "
+                  f"train={train_loss:.6f} | val_es={val_loss:.6f}")
+        if no_improve >= CONFIG["ensemble_sub_patience"]:
+            print(f"  Sub-AE early stopping at epoch {epoch+1}.")
+            break
+    else:
+        print(f"  [!] Sub-AE reached the cap of {CONFIG['ensemble_sub_epochs']} epochs.")
+
+    if best_state is not None:
+        model.ensemble.load_state_dict(best_state)
+
+    # Report per-sub-AE reconstruction quality so instability is visible.
+    model.eval()
+    with torch.no_grad():
+        per_sub = model.per_sub_ae_mse(val_tensor)
+    print(f"  Per-sub-AE validation MSE: min={min(per_sub):.5f} "
+          f"max={max(per_sub):.5f} ratio={max(per_sub)/max(min(per_sub), 1e-9):.2f}x")
+
+    with torch.no_grad():
+        z_all = model.raw_errors(train_tensor.to(DEVICE))
+        model.err_min = z_all.min(dim=0).values.clone()
+        model.err_max = z_all.max(dim=0).values.clone()
+
+    for p in model.ensemble.parameters():
+        p.requires_grad = False
+
+    out_opt = optim.Adam(model.output_ae.parameters(),
+                         lr=CONFIG["learning_rate"],
+                         weight_decay=CONFIG["weight_decay"])
+    best_val = float("inf")
+    best_state = None
+    no_improve = 0
+    out_train_hist, out_val_hist = [], []
+
+    for epoch in range(CONFIG["ensemble_out_epochs"]):
+        model.train()
+        model.ensemble.eval()
+        total = 0.0
+        for (xb,) in loader:
+            xb = xb.to(DEVICE)
+            out_opt.zero_grad()
+            with torch.no_grad():
+                z_n = model.normalise(model.raw_errors(xb))
+            loss = ((z_n - model.output_ae(z_n)) ** 2).mean()
+            loss.backward()
+            out_opt.step()
+            total += loss.item() * len(xb)
+        train_loss = total / len(train_normal)
+
+        model.eval()
+        with torch.no_grad():
+            z_n = model.normalise(model.raw_errors(val_tensor))
+            val_loss = ((z_n - model.output_ae(z_n)) ** 2).mean().item()
+
+        out_train_hist.append(train_loss)
+        out_val_hist.append(val_loss)
+
+        if val_loss < best_val:
+            best_val = val_loss
+            best_state = {k: v.detach().cpu().clone()
+                          for k, v in model.output_ae.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (epoch + 1) % 20 == 0 or epoch == 0:
+            print(f"  OutAE epoch {epoch+1:03d}/{CONFIG['ensemble_out_epochs']} | "
+                  f"train={train_loss:.6f} | val_es={val_loss:.6f}")
+        if no_improve >= CONFIG["ensemble_out_patience"]:
+            print(f"  Output-AE early stopping at epoch {epoch+1}.")
+            break
+    else:
+        print(f"  [!] Output-AE reached the cap of {CONFIG['ensemble_out_epochs']} epochs.")
+
+    if best_state is not None:
+        model.output_ae.load_state_dict(best_state)
+    model.eval()
+    model.loss_histories = {
+        "sub_train": sub_train_hist, "sub_val": sub_val_hist,
+        "out_train": out_train_hist, "out_val": out_val_hist,
+    }
+    return model
+
+
+def fit_isolation_forest(train_normal, seed):
+    model = IsolationForest(n_estimators=CONFIG["iso_n_estimators"],
+                            contamination="auto", random_state=seed, n_jobs=-1)
+    model.fit(train_normal)
+    return model
+
+
+def fit_one_class_svm(train_normal, seed):
+    rng = np.random.default_rng(seed)
+    n = min(len(train_normal), CONFIG["ocsvm_max_samples"])
+    idx = rng.choice(len(train_normal), size=n, replace=False)
+    model = OneClassSVM(kernel=CONFIG["ocsvm_kernel"],
+                        gamma=CONFIG["ocsvm_gamma"], nu=CONFIG["ocsvm_nu"])
+    model.fit(train_normal[idx])
+    return model, idx
+
+
+def fit_random_forest(X_train, y_train, seed):
+    model = RandomForestClassifier(n_estimators=CONFIG["rf_n_estimators"],
+                                   random_state=seed, n_jobs=-1)
+    model.fit(X_train, y_train)
+    return model
+
+
+# -----------------------------------------------------------------------------
+# Fusion
+# -----------------------------------------------------------------------------
+def hybrid_score(ml_score, sym_flag, alpha, gamma):
+    return alpha * ml_score + (1 - alpha) * sym_flag + gamma * ml_score * sym_flag
+
+
+def select_fusion_config(ml_val, sym_val, y_val):
+    rows = []
+    for a in CONFIG["fusion_alphas"]:
+        for g in CONFIG["fusion_gammas"]:
+            for t in CONFIG["fusion_thresholds"]:
+                score = hybrid_score(ml_val, sym_val, a, g)
+                pred = (score > t).astype(int)
+                rows.append({
+                    "alpha": a, "gamma": g, "threshold": t,
+                    "MCC": float(matthews_corrcoef(y_val, pred)),
+                    "Macro_F1": float(f1_score(y_val, pred, average="macro")),
+                    "FPR": float(np.mean(pred[y_val == 0] == 1)),
+                })
+
+    df = pd.DataFrame(rows).sort_values(["MCC", "Macro_F1"], ascending=False)
+    df.to_csv("fusion_validation_search.csv", index=False)
+
+    top = df.head(10)
+    print("Top-10 fusion configurations by val_fusion MCC:")
+    print(top.to_string(index=False))
+    print(f"\nMCC spread across top-10: std={top['MCC'].std():.4f} "
+          f"(range {top['MCC'].min():.4f}–{top['MCC'].max():.4f})")
+
+    best = df.iloc[0]
+    print(f"\nSelected: alpha={best['alpha']}, gamma={best['gamma']}, "
+          f"threshold={best['threshold']} (val_fusion MCC={best['MCC']:.4f})")
+    return {
+        "alpha": float(best["alpha"]),
+        "gamma": float(best["gamma"]),
+        "threshold": float(best["threshold"]),
+        "val_mcc": float(best["MCC"]),
+    }
+
+
+# -----------------------------------------------------------------------------
+# Evaluation
+# -----------------------------------------------------------------------------
+def evaluate_models(registry, y_test):
+    rows = []
+    for name, entry in registry.items():
+        y_pred = entry["preds"]
+        if len(y_pred) != len(y_test):
+            raise ValueError(f"{name}: prediction length mismatch")
+        if not np.isin(y_pred, [0, 1]).all():
+            raise ValueError(f"{name}: predictions must be binary")
+
+        metrics = binary_metrics(y_test, y_pred)
+        if entry.get("auc", False) and entry.get("scores") is not None:
+            scores = entry["scores"]
+            if len(scores) != len(y_test):
+                raise ValueError(f"{name}: score length mismatch")
+            roc, ap = safe_auc(y_test, scores, name)
+        else:
+            roc, ap = np.nan, np.nan
+
+        rows.append({
+            "Model": name,
+            "Score_Type": entry["score_type"],
+            "Evaluation_Setup": entry["setup"],
+            "Accuracy": metrics["Accuracy"],
+            "Macro_F1": metrics["Macro_F1"],
+            "MCC": metrics["MCC"],
+            "ROC_AUC": roc,
+            "Average_Precision": ap,
+            "Precision": metrics["Precision"],
+            "Recall": metrics["Recall"],
+            "FPR": metrics["FPR"],
+            "TP": metrics["TP"], "TN": metrics["TN"],
+            "FP": metrics["FP"], "FN": metrics["FN"],
+        })
+    return pd.DataFrame(rows)
+
+
+def print_results_table(df):
+    display = df.copy()
+    for c in ["Accuracy", "Macro_F1", "MCC", "ROC_AUC", "Average_Precision",
+              "Precision", "Recall", "FPR"]:
+        display[c] = display[c].round(4)
+    print("\n" + "=" * 130)
+    print("FINAL RESULTS TABLE — UNSW-NB15 HELD-OUT TEST SET")
+    print("=" * 130)
+    print(display.to_string(index=False))
+
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+def main():
+    set_seeds(CONFIG["seed"])
+
+    print("=" * 80)
+    print("ENVIRONMENT")
+    print("=" * 80)
+    print(f"Python {sys.version.split()[0]} | PyTorch {torch.__version__} | "
+          f"scikit-learn {sklearn.__version__} | pandas {pd.__version__} | "
+          f"NumPy {np.__version__} | CUDA {torch.cuda.is_available()}")
+    print(f"Device: {DEVICE}")
+
+    # The dataset CSVs live at /content/ in this environment.
+    # Override by setting the DATA_DIR environment variable.
+    data_dir = Path(os.environ.get("DATA_DIR", "/content"))
+
+    # ---- Data ---------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("DATA LOADING AND INTEGRITY")
+    print("=" * 80)
+    train_df, test_df, provenance = load_and_verify_data(data_dir)
+    audit = audit_data_quality(train_df, test_df)
+
+    test_attack_cat = None
+    if "attack_cat" in test_df.columns:
+        test_attack_cat = (test_df["attack_cat"]
+                           .fillna("Unknown")
+                           .astype("string")
+                           .str.strip())
+
+    # ---- Splits -------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("GROUP-AWARE SPLITS")
+    print("=" * 80)
+    y_train_full = train_df["label"].to_numpy()
+    splits = group_aware_splits(train_df, y_train_full, DROP_COLUMNS)
+    for name in ["train", "val_es", "val_rules", "val_fusion"]:
+        np.save(f"{name}_indices.npy", splits[name])
+
+    # ---- Preprocessing ------------------------------------------------
+    print("\n" + "=" * 80)
+    print("PREPROCESSING")
+    print("=" * 80)
+    bundle = prepare_features(train_df, test_df, splits, DROP_COLUMNS)
+    joblib.dump(bundle["preprocessor"], "preprocessor.joblib")
+
+    X_val_es = bundle["X_val_es"]
+    X_val_fusion = bundle["X_val_fusion"]
+    X_test = bundle["X_test"]
+    y_train = bundle["y_train"]
+    y_val_es = bundle["y_val_es"]
+    y_val_rules = bundle["y_val_rules"]
+    y_val_fusion = bundle["y_val_fusion"]
+    y_test = bundle["y_test"]
+    normal_mask = bundle["normal_train_mask"]
+    train_normal = bundle["train_normal"]
+    n_features = bundle["n_features"]
+
+    es_normal = (y_val_es == 0)
+    fusion_normal = (y_val_fusion == 0)
+
+    print(f"Note: val_fusion has {fusion_normal.sum():,} normal rows. Every "
+          f"percentile threshold, the fusion search, and the control use it.")
+
+    # ---- Classical baselines ------------------------------------------
+    print("\n" + "=" * 80)
+    print("CLASSICAL BASELINES")
+    print("=" * 80)
+
+    iso = fit_isolation_forest(train_normal, CONFIG["seed"])
+    iso_val = -iso.score_samples(X_val_fusion)
+    iso_test = -iso.score_samples(X_test)
+    iso_threshold = float(np.percentile(iso_val[fusion_normal],
+                                        CONFIG["threshold_percentile"]))
+    y_pred_iso = (iso_test > iso_threshold).astype(int)
+    print(f"[ISO]   threshold={iso_threshold:.6f} | "
+          f"val exceedance={np.mean(iso_val[fusion_normal] > iso_threshold):.4%}")
+
+    ocsvm, ocsvm_sub_idx = fit_one_class_svm(train_normal, CONFIG["seed"])
+    ocsvm_val = -ocsvm.score_samples(X_val_fusion)
+    ocsvm_test = -ocsvm.score_samples(X_test)
+    ocsvm_threshold = float(np.percentile(ocsvm_val[fusion_normal],
+                                          CONFIG["threshold_percentile"]))
+    y_pred_ocsvm = (ocsvm_test > ocsvm_threshold).astype(int)
+    print(f"[OCSVM] threshold={ocsvm_threshold:.6f} | "
+          f"val exceedance={np.mean(ocsvm_val[fusion_normal] > ocsvm_threshold):.4%}")
+
+    normal_original_ids = splits["train"][normal_mask]
+    ocsvm_original_ids = normal_original_ids[ocsvm_sub_idx]
+    np.save("ocsvm_subsample_positions.npy", ocsvm_sub_idx)
+    np.save("ocsvm_subsample_original_ids.npy", ocsvm_original_ids)
+    ocsvm_ids_sha256 = hashlib.sha256(
+        np.asarray(ocsvm_original_ids, dtype=np.int64).tobytes()).hexdigest()
+
+    # ---- Autoencoder --------------------------------------------------
+    print("\n" + "=" * 80)
+    print("DEEP AUTOENCODER")
+    print("=" * 80)
+    ae_model, ae_train_hist, ae_val_hist = train_autoencoder(
+        seed=CONFIG["seed"], input_dim=n_features,
+        train_data=train_normal, val_data=X_val_es[es_normal],
+        epochs=CONFIG["ae_epochs"], patience=CONFIG["ae_patience"],
+    )
+
+    criterion = nn.MSELoss(reduction="none")
+    val_fusion_tensor = torch.tensor(X_val_fusion, dtype=torch.float32).to(DEVICE)
+    test_tensor = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
+    with torch.no_grad():
+        val_fusion_mse = criterion(ae_model(val_fusion_tensor),
+                                   val_fusion_tensor).mean(dim=1).cpu().numpy()
+        test_mse = criterion(ae_model(test_tensor),
+                             test_tensor).mean(dim=1).cpu().numpy()
+
+    ae_threshold = float(np.percentile(val_fusion_mse[fusion_normal],
+                                        CONFIG["threshold_percentile"]))
+    if ae_threshold <= 1e-12:
+        raise ValueError(f"AE threshold too small: {ae_threshold}")
+
+    S_ML_val = val_fusion_mse / ae_threshold
+    S_ML_test = test_mse / ae_threshold
+    y_pred_ae = (S_ML_test > 1.0).astype(int)
+
+    grid = np.sort(np.unique(np.concatenate([
+        np.percentile(S_ML_val[fusion_normal], np.linspace(50, 99.9, 100)),
+        np.array([1.5, 2.0, 3.0]),
+    ])))
+    ae_tuned_threshold = max(
+        grid,
+        key=lambda t: matthews_corrcoef(y_val_fusion, (S_ML_val > t).astype(int)),
+    )
+    y_pred_ae_control = (S_ML_test > ae_tuned_threshold).astype(int)
+    if ae_tuned_threshold >= grid[-2]:
+        print("[!] Label-tuned threshold is at the edge of the search grid.")
+    print(f"[AE] unsupervised threshold = {ae_threshold:.6f}")
+    print(f"[AE] label-tuned threshold  = {ae_tuned_threshold:.6f}")
+
+    # ---- Random-subspace ensemble -------------------------------------
+    print("\n" + "=" * 80)
+    print("RANDOM-SUBSPACE ENSEMBLE")
+    print("=" * 80)
+    ensemble_model = train_ensemble(
+        seed=CONFIG["seed"], train_normal=train_normal,
+        val_normal=X_val_es[es_normal], n_features=n_features,
+    )
+    np.save("ensemble_subspace_indices.npy",
+            np.array(ensemble_model.subspace_indices, dtype=object),
+            allow_pickle=True)
+    print(f"Ensemble has {ensemble_model.k} sub-autoencoders "
+          f"(preferred {CONFIG['ensemble_preferred_subspaces']}).")
+
+    for tag, tensor in [("train", torch.tensor(train_normal, dtype=torch.float32).to(DEVICE)),
+                        ("val_es", torch.tensor(X_val_es[es_normal], dtype=torch.float32).to(DEVICE)),
+                        ("val_fusion", val_fusion_tensor),
+                        ("test", test_tensor)]:
+        with torch.no_grad():
+            z_n = ensemble_model.normalise(ensemble_model.raw_errors(tensor))
+            below = (z_n < 0).float().mean().item()
+            above = (z_n > 1).float().mean().item()
+        print(f"  Normalised errors [{tag}] below 0: {below:.4%}, above 1: {above:.4%}")
+
+    with torch.no_grad():
+        _, z_n_vf, z_hat_vf = ensemble_model(val_fusion_tensor)
+        ens_val_fusion_mse = ((z_n_vf - z_hat_vf) ** 2).mean(dim=1).cpu().numpy()
+        _, z_n_te, z_hat_te = ensemble_model(test_tensor)
+        ens_test_mse = ((z_n_te - z_hat_te) ** 2).mean(dim=1).cpu().numpy()
+
+    ens_threshold = float(np.percentile(ens_val_fusion_mse[fusion_normal],
+                                         CONFIG["threshold_percentile"]))
+    if ens_threshold <= 1e-12:
+        raise ValueError(f"Ensemble threshold too small: {ens_threshold}")
+    S_Ens_test = ens_test_mse / ens_threshold
+    y_pred_ens = (S_Ens_test > 1.0).astype(int)
+
+    # ---- Symbolic rules -----------------------------------------------
+    print("\n" + "=" * 80)
+    print("SYMBOLIC RULES")
+    print("=" * 80)
+    train_raw = train_df.drop(columns=[c for c in DROP_COLUMNS if c in train_df.columns])
+    train_raw_normal = train_raw.iloc[splits["train"]][normal_mask]
+    val_rules_raw = train_raw.iloc[splits["val_rules"]]
+
+    rule_cfg, rule_thresholds, _ = select_rule_config(
+        train_raw_normal, val_rules_raw, y_val_rules)
+
+    val_fusion_raw = train_raw.iloc[splits["val_fusion"]]
+    test_raw = test_df.drop(columns=[c for c in DROP_COLUMNS if c in test_df.columns])
+    S_Sym_val, _ = extract_rules(val_fusion_raw, rule_cfg, rule_thresholds)
+    S_Sym_test, _ = extract_rules(test_raw, rule_cfg, rule_thresholds)
+    y_pred_rules = S_Sym_test.astype(int)
+
+    print(f"Rule firing rates on test: "
+          f"normal={np.mean(S_Sym_test[y_test == 0] > 0):.4%}, "
+          f"attack={np.mean(S_Sym_test[y_test == 1] > 0):.4%}")
+
+    # ---- Fusion --------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("HYBRID FUSION")
+    print("=" * 80)
+    fusion = select_fusion_config(S_ML_val, S_Sym_val, y_val_fusion)
+    implied_no_rule = fusion["threshold"] / fusion["alpha"]
+    implied_with_rule = ((fusion["threshold"] - (1 - fusion["alpha"]))
+                         / (fusion["alpha"] + fusion["gamma"]))
+    print(f"Implied ML threshold when no rule fires: {implied_no_rule:.4f}")
+    print(f"Implied ML threshold when a rule fires : {implied_with_rule:.4f}")
+
+    control_val_pred = (S_ML_val > ae_tuned_threshold).astype(int)
+    control_val_mcc = float(matthews_corrcoef(y_val_fusion, control_val_pred))
+    print(f"Control (AE label-tuned) validation MCC on val_fusion: "
+          f"{control_val_mcc:.4f}")
+    print(f"Hybrid validation MCC on val_fusion                 : "
+          f"{fusion['val_mcc']:.4f}")
+
+    # ---- Supervised comparator ----------------------------------------
+    print("\n" + "=" * 80)
+    print("SUPERVISED COMPARATOR")
+    print("=" * 80)
+    rf_preprocessor = build_preprocessor(
+        bundle["numerical_cols"], bundle["indicator_cols"], with_indicators=True)
+    rf_preprocessor.fit(bundle["train_aug"])
+    X_train_rf = rf_preprocessor.transform(bundle["train_aug"])
+    X_test_rf = rf_preprocessor.transform(bundle["test_aug"])
+
+    rf = fit_random_forest(X_train_rf, y_train, CONFIG["seed"])
+    y_pred_rf = rf.predict(X_test_rf).astype(int)
+    rf_test_scores = rf.predict_proba(X_test_rf)[:, 1]
+
+    # ---- Held-out evaluation ------------------------------------------
+    print("\n" + "=" * 80)
+    print("HELD-OUT TEST EVALUATION")
+    print("=" * 80)
+    print("No test labels or test performance were used for model fitting or")
+    print("threshold selection. The training set was not modified using test data.")
+
+    S_Hybrid_test = hybrid_score(S_ML_test, S_Sym_test,
+                                 fusion["alpha"], fusion["gamma"])
+    y_pred_hybrid = (S_Hybrid_test > fusion["threshold"]).astype(int)
+
+    y_pred_or = np.logical_or(y_pred_ae, y_pred_rules).astype(int)
+    y_pred_and = np.logical_and(y_pred_ae, y_pred_rules).astype(int)
+
+    S_Hybrid_zeroed = hybrid_score(S_ML_test, np.zeros_like(S_Sym_test),
+                                   fusion["alpha"], fusion["gamma"])
+    y_pred_hybrid_zeroed = (S_Hybrid_zeroed > fusion["threshold"]).astype(int)
+
+    majority_class = int(pd.Series(y_train).mode().iloc[0])
+    y_pred_majority = np.full(len(y_test), majority_class, dtype=int)
+    y_pred_normal = np.zeros(len(y_test), dtype=int)
+    rng_eval = np.random.default_rng(CONFIG["seed"] + 1)
+    random_scores = rng_eval.random(len(y_test))
+    y_pred_random = (random_scores >= 0.5).astype(int)
+
+    registry = {
+        "Trivial: Random": {
+            "preds": y_pred_random, "scores": random_scores,
+            "score_type": "continuous random score",
+            "setup": "test-only baseline", "auc": True},
+        "Trivial: Majority Class": {
+            "preds": y_pred_majority, "scores": None,
+            "score_type": "binary decision",
+            "setup": "test-only baseline", "auc": False},
+        "Trivial: Normal Only": {
+            "preds": y_pred_normal, "scores": None,
+            "score_type": "binary decision",
+            "setup": "test-only baseline", "auc": False},
+        "Baseline: Isolation Forest": {
+            "preds": y_pred_iso, "scores": iso_test,
+            "score_type": "continuous anomaly score",
+            "setup": "val_fusion normal-percentile threshold", "auc": True},
+        "Baseline: One-Class SVM": {
+            "preds": y_pred_ocsvm, "scores": ocsvm_test,
+            "score_type": "continuous anomaly score",
+            "setup": "val_fusion normal-percentile threshold", "auc": True},
+        "Baseline: Symbolic Rules": {
+            "preds": y_pred_rules, "scores": S_Sym_test.astype(float),
+            "score_type": "binary rule score",
+            "setup": "val_rules-selected config", "auc": False},
+        "Connectionist: Deep Autoencoder": {
+            "preds": y_pred_ae, "scores": S_ML_test,
+            "score_type": "continuous anomaly score",
+            "setup": "val_fusion normal-percentile threshold", "auc": True},
+        "Control: Deep Autoencoder (Label-Tuned)": {
+            "preds": y_pred_ae_control, "scores": S_ML_test,
+            "score_type": "continuous anomaly score",
+            "setup": "val_fusion MCC-tuned threshold", "auc": True},
+        "Connectionist: Random-Subspace Ensemble": {
+            "preds": y_pred_ens, "scores": S_Ens_test,
+            "score_type": "continuous anomaly score",
+            "setup": "val_fusion normal-percentile threshold", "auc": True},
+        "Ablation: Logical OR": {
+            "preds": y_pred_or, "scores": None,
+            "score_type": "binary decision",
+            "setup": "locked component decisions", "auc": False},
+        "Ablation: Logical AND": {
+            "preds": y_pred_and, "scores": None,
+            "score_type": "binary decision",
+            "setup": "locked component decisions", "auc": False},
+        "Ablation: Hybrid with Rules Zeroed": {
+            "preds": y_pred_hybrid_zeroed, "scores": S_Hybrid_zeroed,
+            "score_type": "continuous hybrid score",
+            "setup": "rules disabled, other parameters locked", "auc": True},
+        "Proposed: Neuro-Symbolic Hybrid": {
+            "preds": y_pred_hybrid, "scores": S_Hybrid_test,
+            "score_type": "continuous hybrid score",
+            "setup": "val_fusion-tuned fusion parameters", "auc": True},
+        "Supervised Comparator: Random Forest": {
+            "preds": y_pred_rf, "scores": rf_test_scores,
+            "score_type": "supervised class probability",
+            "setup": "supervised (uses labels for fitting)", "auc": True},
+    }
+
+    results_df = evaluate_models(registry, y_test)
+    print_results_table(results_df)
+    print(f"\nAttack prevalence in test set: {np.mean(y_test == 1):.4f}")
+    print("Average Precision should be interpreted against this prevalence.")
+
+    # ---- Attack-category breakdown ------------------------------------
+    if test_attack_cat is not None:
+        print("\n" + "=" * 80)
+        print("ATTACK-CATEGORY BREAKDOWN")
+        print("=" * 80)
+        cat_df = pd.DataFrame({
+            "attack_cat": test_attack_cat.values,
+            "true_label": y_test,
+            "hybrid": y_pred_hybrid,
+            "hybrid_zeroed": y_pred_hybrid_zeroed,
+            "ae": y_pred_ae,
+            "ae_control": y_pred_ae_control,
+            "ensemble": y_pred_ens,
+            "ocsvm": y_pred_ocsvm,
+            "rules": y_pred_rules,
+            "rf": y_pred_rf,
+        })
+        print(pd.crosstab(cat_df["attack_cat"], cat_df["true_label"], margins=True))
+        rows = []
+        for cat in cat_df[cat_df["true_label"] == 1]["attack_cat"].unique():
+            sub = cat_df[cat_df["attack_cat"] == cat]
+            rows.append({
+                "Attack Category": cat,
+                "Sample Count": len(sub),
+                **{f"{col}_Recall": round(recall_score(
+                    sub["true_label"], sub[col], zero_division=0), 4)
+                   for col in ["hybrid", "hybrid_zeroed", "ae", "ae_control",
+                               "ensemble", "ocsvm", "rules", "rf"]},
+            })
+        cat_out = pd.DataFrame(rows)
+        cat_out.to_csv("attack_category_results.csv", index=False)
+        print("\nCategory recall breakdown:")
+        print(cat_out.to_string(index=False))
+
+    # ---- Multi-seed sensitivity with indicator ablation ----------------
+    print("\n" + "=" * 80)
+    print("MULTI-SEED SENSITIVITY")
+    print("=" * 80)
+    print(f"Seeds: {CONFIG['sensitivity_seeds']}. Fusion parameters and rule")
+    print("thresholds are locked from the primary seed.")
+
+    multi_rows = []
+    delta_rows = []
+    indicator_rows = []
+
+    for seed in CONFIG["sensitivity_seeds"]:
+        set_seeds(seed)
+
+        iso_s = fit_isolation_forest(train_normal, seed)
+        iso_s_val = -iso_s.score_samples(X_val_fusion)
+        iso_s_thr = float(np.percentile(iso_s_val[fusion_normal],
+                                         CONFIG["threshold_percentile"]))
+        iso_s_pred = (-iso_s.score_samples(X_test) > iso_s_thr).astype(int)
+
+        oc_s, _ = fit_one_class_svm(train_normal, seed)
+        oc_s_val = -oc_s.score_samples(X_val_fusion)
+        oc_s_thr = float(np.percentile(oc_s_val[fusion_normal],
+                                        CONFIG["threshold_percentile"]))
+        oc_s_pred = (-oc_s.score_samples(X_test) > oc_s_thr).astype(int)
+
+        ens_s = train_ensemble(seed=seed, train_normal=train_normal,
+                                val_normal=X_val_es[es_normal],
+                                n_features=n_features)
+        with torch.no_grad():
+            _, z_n_vf, z_hat_vf = ens_s(val_fusion_tensor)
+            ens_s_val = ((z_n_vf - z_hat_vf) ** 2).mean(dim=1).cpu().numpy()
+            _, z_n_te, z_hat_te = ens_s(test_tensor)
+            ens_s_test = ((z_n_te - z_hat_te) ** 2).mean(dim=1).cpu().numpy()
+        ens_s_thr = float(np.percentile(ens_s_val[fusion_normal],
+                                         CONFIG["threshold_percentile"]))
+        ens_s_pred = ((ens_s_test / ens_s_thr) > 1.0).astype(int)
+
+        ae_s, _, _ = train_autoencoder(
+            seed=seed, input_dim=n_features,
+            train_data=train_normal, val_data=X_val_es[es_normal],
+            epochs=CONFIG["ae_epochs"], patience=CONFIG["ae_patience"],
+        )
+        with torch.no_grad():
+            vf = criterion(ae_s(val_fusion_tensor),
+                           val_fusion_tensor).mean(dim=1).cpu().numpy()
+            ts = criterion(ae_s(test_tensor),
+                           test_tensor).mean(dim=1).cpu().numpy()
+        thr_s = float(np.percentile(vf[fusion_normal],
+                                     CONFIG["threshold_percentile"]))
+        s_vf, s_ts = vf / thr_s, ts / thr_s
+        ae_s_pred = (s_ts > 1.0).astype(int)
+
+        grid_s = np.sort(np.unique(np.concatenate([
+            np.percentile(s_vf[fusion_normal], np.linspace(50, 99.9, 100)),
+            np.array([1.5, 2.0, 3.0]),
+        ])))
+        ctrl_thr = max(grid_s, key=lambda t: matthews_corrcoef(
+            y_val_fusion, (s_vf > t).astype(int)))
+        ctrl_pred = (s_ts > ctrl_thr).astype(int)
+
+        hyb_pred = (hybrid_score(s_ts, S_Sym_test,
+                                 fusion["alpha"], fusion["gamma"])
+                    > fusion["threshold"]).astype(int)
+        hyb_zeroed_pred = (hybrid_score(s_ts, np.zeros_like(S_Sym_test),
+                                        fusion["alpha"], fusion["gamma"])
+                           > fusion["threshold"]).astype(int)
+
+        seed_mcc = {}
+        for name, pred in [
+            ("Isolation Forest", iso_s_pred),
+            ("One-Class SVM", oc_s_pred),
+            ("Random-Subspace Ensemble", ens_s_pred),
+            ("Autoencoder (unsupervised)", ae_s_pred),
+            ("Autoencoder (label-tuned control)", ctrl_pred),
+            ("Hybrid with rules zeroed", hyb_zeroed_pred),
+            ("Hybrid (locked fusion)", hyb_pred),
+        ]:
+            m = binary_metrics(y_test, pred)
+            seed_mcc[name] = m["MCC"]
+            multi_rows.append({"Seed": seed, "Model": name, **m})
+
+        delta_rows.append({
+            "Seed": seed,
+            "Hybrid - Zeroed": seed_mcc["Hybrid (locked fusion)"]
+                              - seed_mcc["Hybrid with rules zeroed"],
+            "Hybrid - Control": seed_mcc["Hybrid (locked fusion)"]
+                               - seed_mcc["Autoencoder (label-tuned control)"],
+            "Hybrid - AE": seed_mcc["Hybrid (locked fusion)"]
+                          - seed_mcc["Autoencoder (unsupervised)"],
+        })
+
+        # Unseen-indicator ablation for this seed. The ablation model is
+        # trained on features without the __unseen_* indicators and computes
+        # its own validation threshold, so the comparison is fair.
+        pp_ni = build_preprocessor(bundle["numerical_cols"],
+                                    bundle["indicator_cols"],
+                                    with_indicators=False)
+        train_aug_ni = bundle["train_aug"].drop(columns=bundle["indicator_cols"])
+        test_aug_ni = bundle["test_aug"].drop(columns=bundle["indicator_cols"])
+        val_es_aug_ni = bundle["val_es_aug"].drop(columns=bundle["indicator_cols"])
+        val_fusion_aug_ni = bundle["val_fusion_aug"].drop(columns=bundle["indicator_cols"])
+        pp_ni.fit(train_aug_ni[normal_mask])
+        X_train_ni = pp_ni.transform(train_aug_ni)
+        X_test_ni = pp_ni.transform(test_aug_ni)
+        X_val_es_ni = pp_ni.transform(val_es_aug_ni)
+        X_val_fusion_ni = pp_ni.transform(val_fusion_aug_ni)
+
+        ae_ni, _, _ = train_autoencoder(
+            seed=seed, input_dim=X_train_ni.shape[1],
+            train_data=X_train_ni[normal_mask],
+            val_data=X_val_es_ni[es_normal],
+            epochs=CONFIG["ae_epochs"], patience=CONFIG["ae_patience"],
+        )
+        val_fusion_ni_tensor = torch.tensor(X_val_fusion_ni,
+                                             dtype=torch.float32).to(DEVICE)
+        test_ni_tensor = torch.tensor(X_test_ni, dtype=torch.float32).to(DEVICE)
+        with torch.no_grad():
+            vf_ni = criterion(ae_ni(val_fusion_ni_tensor),
+                              val_fusion_ni_tensor).mean(dim=1).cpu().numpy()
+            ts_ni = criterion(ae_ni(test_ni_tensor),
+                              test_ni_tensor).mean(dim=1).cpu().numpy()
+        ae_threshold_ni = float(np.percentile(
+            vf_ni[fusion_normal], CONFIG["threshold_percentile"]))
+        score_ni = ts_ni / ae_threshold_ni
+        pred_ni = (score_ni > 1.0).astype(int)
+
+        m_ni = binary_metrics(y_test, pred_ni)
+        indicator_rows.append({
+            "Seed": seed,
+            "AE_with_indicators_MCC": seed_mcc["Autoencoder (unsupervised)"],
+            "AE_without_indicators_MCC": m_ni["MCC"],
+            "Delta": seed_mcc["Autoencoder (unsupervised)"] - m_ni["MCC"],
+            "AE_without_indicators_Accuracy": m_ni["Accuracy"],
+            "AE_without_indicators_Recall": m_ni["Recall"],
+            "AE_without_indicators_FPR": m_ni["FPR"],
+            "AE_without_indicators_threshold": ae_threshold_ni,
+        })
+
+    set_seeds(CONFIG["seed"])
+    multi_df = pd.DataFrame(multi_rows)
+    multi_df.to_csv("multi_seed_sensitivity.csv", index=False)
+    print("Mean ± std across seeds:")
+    for model in multi_df["Model"].unique():
+        sub = multi_df[multi_df["Model"] == model]
+        print(f"  {model:<34} | "
+              f"Acc {sub['Accuracy'].mean():.4f} ± {sub['Accuracy'].std():.4f} | "
+              f"MCC {sub['MCC'].mean():.4f} ± {sub['MCC'].std():.4f} | "
+              f"Recall {sub['Recall'].mean():.4f} ± {sub['Recall'].std():.4f} | "
+              f"FPR {sub['FPR'].mean():.4f} ± {sub['FPR'].std():.4f}")
+
+    delta_df = pd.DataFrame(delta_rows)
+    delta_df.to_csv("multi_seed_paired_deltas.csv", index=False)
+    print("\nPaired per-seed MCC differences (mean ± std):")
+    for col in ["Hybrid - Zeroed", "Hybrid - Control", "Hybrid - AE"]:
+        print(f"  {col:<18} | {delta_df[col].mean():+.4f} ± {delta_df[col].std():.4f}")
+
+    indicator_df = pd.DataFrame(indicator_rows)
+    indicator_df.to_csv("unseen_indicator_ablation.csv", index=False)
+    print("\nUnseen-indicator ablation (mean ± std across seeds):")
+    print(f"  AE with indicators    MCC = "
+          f"{indicator_df['AE_with_indicators_MCC'].mean():.4f} ± "
+          f"{indicator_df['AE_with_indicators_MCC'].std():.4f}")
+    print(f"  AE without indicators MCC = "
+          f"{indicator_df['AE_without_indicators_MCC'].mean():.4f} ± "
+          f"{indicator_df['AE_without_indicators_MCC'].std():.4f}")
+    print(f"  Mean delta            = "
+          f"{indicator_df['Delta'].mean():+.4f} ± "
+          f"{indicator_df['Delta'].std():.4f}")
+
+    # ---- Deduplicated-test sensitivity ---------------------------------
+    print("\n" + "=" * 80)
+    print("DEDUPLICATED-TEST SENSITIVITY")
+    print("=" * 80)
+    test_model_cols = [c for c in test_df.columns
+                       if c not in DROP_COLUMNS and c != "label"]
+    test_model_hash = pd.util.hash_pandas_object(
+        test_df[test_model_cols], index=False)
+    dedup_idx = np.where((~test_model_hash.duplicated(keep="first")).values)[0]
+    print(f"Full test set       : {len(y_test):,} rows "
+          f"(attack prevalence {np.mean(y_test == 1):.4f})")
+    print(f"Model-visible unique: {len(dedup_idx):,} rows "
+          f"(attack prevalence {np.mean(y_test[dedup_idx] == 1):.4f})")
+
+    y_test_dedup = y_test[dedup_idx]
+    S_ML_dedup = S_ML_test[dedup_idx]
+    S_Sym_dedup = S_Sym_test[dedup_idx]
+    S_Ens_dedup = S_Ens_test[dedup_idx]
+    iso_dedup = iso_test[dedup_idx]
+    ocsvm_dedup = ocsvm_test[dedup_idx]
+    rf_dedup_scores = rf_test_scores[dedup_idx]
+    rf_dedup_preds = y_pred_rf[dedup_idx]
+
+    hyb_dedup_preds = (hybrid_score(S_ML_dedup, S_Sym_dedup,
+                                     fusion["alpha"], fusion["gamma"])
+                       > fusion["threshold"]).astype(int)
+    hyb_zeroed_dedup_preds = (hybrid_score(S_ML_dedup,
+                                            np.zeros_like(S_Sym_dedup),
+                                            fusion["alpha"], fusion["gamma"])
+                              > fusion["threshold"]).astype(int)
+    ctrl_dedup_preds = (S_ML_dedup > ae_tuned_threshold).astype(int)
+
+    dedup_rows = []
+    for name, pred, score in [
+        ("Isolation Forest", (iso_dedup > iso_threshold).astype(int), iso_dedup),
+        ("One-Class SVM", (ocsvm_dedup > ocsvm_threshold).astype(int), ocsvm_dedup),
+        ("Single Autoencoder", (S_ML_dedup > 1.0).astype(int), S_ML_dedup),
+        ("Autoencoder (label-tuned control)", ctrl_dedup_preds, S_ML_dedup),
+        ("Ensemble", (S_Ens_dedup > 1.0).astype(int), S_Ens_dedup),
+        ("Hybrid with rules zeroed", hyb_zeroed_dedup_preds,
+         hybrid_score(S_ML_dedup, np.zeros_like(S_Sym_dedup),
+                       fusion["alpha"], fusion["gamma"])),
+        ("Hybrid", hyb_dedup_preds,
+         hybrid_score(S_ML_dedup, S_Sym_dedup, fusion["alpha"], fusion["gamma"])),
+        ("RF (supervised)", rf_dedup_preds, rf_dedup_scores),
+    ]:
+        roc, ap = safe_auc(y_test_dedup, score, name)
+        m = binary_metrics(y_test_dedup, pred)
+        dedup_rows.append({
+            "Model": name,
+            "Accuracy": round(m["Accuracy"], 4),
+            "Macro_F1": round(m["Macro_F1"], 4),
+            "MCC": round(m["MCC"], 4),
+            "ROC_AUC": round(roc, 4) if not np.isnan(roc) else np.nan,
+            "Average_Precision": round(ap, 4) if not np.isnan(ap) else np.nan,
+            "Recall": round(m["Recall"], 4),
+            "FPR": round(m["FPR"], 4),
+        })
+    dedup_df = pd.DataFrame(dedup_rows)
+    dedup_df.to_csv("test_dedup_sensitivity.csv", index=False)
+    print(dedup_df.to_string(index=False))
+
+    # ---- Save thresholds ----------------------------------------------
+    thresholds_payload = {
+        "isolation_forest": float(iso_threshold),
+        "one_class_svm": float(ocsvm_threshold),
+        "autoencoder_unsupervised": float(ae_threshold),
+        "autoencoder_label_tuned": float(ae_tuned_threshold),
+        "ensemble": float(ens_threshold),
+        "fusion": float(fusion["threshold"]),
+        "fusion_alpha": float(fusion["alpha"]),
+        "fusion_gamma": float(fusion["gamma"]),
+        "implied_ml_threshold_when_no_rule_fires": float(implied_no_rule),
+        "implied_ml_threshold_when_rule_fires": float(implied_with_rule),
+    }
+    with open("thresholds.json", "w") as f:
+        json.dump(thresholds_payload, f, indent=2)
+
+    # ---- Save artifacts ------------------------------------------------
+    print("\n" + "=" * 80)
+    print("SAVE ARTIFACTS")
+    print("=" * 80)
+
+    manifest = {
+        "provenance": provenance,
+        "orientation_note": (
+            "Official UNSW-NB15 split sizes are 175,341 training and "
+            "82,332 testing records. Local filenames may be reversed."
+        ),
+        "data_quality": audit,
+        "dropped_columns": bundle["dropped_columns"],
+        "drop_reasons": {k: DROP_REASONS[k] for k in bundle["dropped_columns"]},
+        "splits": {k: int(len(v)) for k, v in splits.items() if k != "group_hash"},
+        "split_method": "GroupShuffleSplit on model-visible feature-vector hash",
+        "preprocessing": {
+            "categorical_columns": CATEGORICAL_COLS,
+            "heavy_tailed_log1p_cols": HEAVY_TAILED_COLS,
+            "unseen_category_indicators": bundle["indicator_cols"],
+            "minmax_scaler_fit_on": "normal training rows only",
+            "feature_dim_after_transform": int(n_features),
+        },
+        "val_fusion_note": (
+            f"val_fusion contains {int(fusion_normal.sum())} normal rows. "
+            f"Every percentile threshold, the fusion grid search, and the "
+            f"label-tuned control are calibrated on this subset. See the "
+            f"report's limitations section."
+        ),
+    }
+    with open("data_manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    baseline_config = {
+        "seed": CONFIG["seed"],
+        "threshold_percentile": CONFIG["threshold_percentile"],
+        "isolation_forest": {
+            "n_estimators": CONFIG["iso_n_estimators"],
+            "score_definition": "negated score_samples",
+            "raw_score_threshold": float(iso_threshold),
+        },
+        "one_class_svm": {
+            "kernel": CONFIG["ocsvm_kernel"],
+            "gamma": CONFIG["ocsvm_gamma"],
+            "nu": CONFIG["ocsvm_nu"],
+            "score_definition": "negated score_samples",
+            "raw_score_threshold": float(ocsvm_threshold),
+            "samples_used": int(len(ocsvm_sub_idx)),
+            "original_ids_sha256": ocsvm_ids_sha256,
+        },
+    }
+    with open("baseline_config.json", "w") as f:
+        json.dump(baseline_config, f, indent=2)
+
+    experiment_config = {
+        "config": CONFIG,
+        "rule_config_selected": rule_cfg,
+        "rule_thresholds_selected": {k: float(v) for k, v in rule_thresholds.items()},
+        "rule_rationale": RULE_RATIONALE,
+        "rule_layer_note": (
+            "The rules are percentile thresholds on training-normal feature "
+            "distributions. They are distributional outlier detectors rather "
+            "than an expert knowledge base."
+        ),
+        "fusion": {
+            "alpha": fusion["alpha"],
+            "gamma": fusion["gamma"],
+            "threshold": fusion["threshold"],
+            "selection_metric": "val_fusion MCC, tie-broken by val_fusion Macro-F1",
+            "validation_tuned": True,
+            "interaction_term": "multiplicative ML * symbolic; not Boolean AND",
+            "implied_ml_threshold_when_no_rule_fires": float(implied_no_rule),
+            "implied_ml_threshold_when_rule_fires": float(implied_with_rule),
+        },
+        "ensemble": {
+            "preferred_subspaces": CONFIG["ensemble_preferred_subspaces"],
+            "actual_subspaces": int(ensemble_model.k),
+            "subspace_sizes": [int(len(s)) for s in ensemble_model.subspace_indices],
+            "architecture_note": (
+                "random-subspace ensemble, not a faithful Kitsune reproduction; "
+                "sub-AEs use LeakyReLU activations and a latent of 4"
+            ),
+        },
+        "loss_histories": {
+            "ae_train": [float(v) for v in ae_train_hist],
+            "ae_val_es": [float(v) for v in ae_val_hist],
+            "ensemble_sub_train": [float(v) for v in ensemble_model.loss_histories["sub_train"]],
+            "ensemble_sub_val_es": [float(v) for v in ensemble_model.loss_histories["sub_val"]],
+            "ensemble_out_train": [float(v) for v in ensemble_model.loss_histories["out_train"]],
+            "ensemble_out_val_es": [float(v) for v in ensemble_model.loss_histories["out_val"]],
+        },
+        "software": {
+            "python": sys.version.split()[0],
+            "pytorch": torch.__version__,
+            "sklearn": sklearn.__version__,
+            "pandas": pd.__version__,
+            "numpy": np.__version__,
+        },
+        "device": str(DEVICE),
+    }
+    with open("experiment_config.json", "w") as f:
+        json.dump(experiment_config, f, indent=2)
+
+    with open("feature_names.json", "w") as f:
+        try:
+            names = bundle["preprocessor"].get_feature_names_out().tolist()
+        except AttributeError:
+            names = [f"feature_{i}" for i in range(n_features)]
+        json.dump(names, f, indent=2)
+
+    torch.save(ae_model.state_dict(), "autoencoder_state_dict.pt")
+    torch.save(ensemble_model.state_dict(), "ensemble_state_dict.pt")
+    joblib.dump(rf, "rf_comparator.joblib", compress=3)
+    joblib.dump(rf_preprocessor, "rf_preprocessor.joblib")
+    results_df.to_csv("final_experimental_results.csv", index=False)
+
+    # ---- Reload smoke test --------------------------------------------
+    print("\n" + "=" * 80)
+    print("RELOAD SMOKE TEST")
+    print("=" * 80)
+
+    reload_ok = True
+    try:
+        pre = joblib.load("preprocessor.joblib")
+        if not np.allclose(pre.transform(bundle["test_aug"]), X_test):
+            raise AssertionError("Preprocessor reload produced different features.")
+        print("  Preprocessor reload matches original features.")
+    except Exception as exc:
+        reload_ok = False
+        print(f"  [!] Preprocessor reload failed: {exc}")
+
+    try:
+        ae_reload = DeepAutoencoder(n_features, CONFIG["ae_hidden"],
+                                     CONFIG["ae_latent"]).to(DEVICE)
+        ae_reload.load_state_dict(torch.load("autoencoder_state_dict.pt",
+                                              map_location=DEVICE))
+        ae_reload.eval()
+        with torch.no_grad():
+            mse_reload = criterion(ae_reload(test_tensor),
+                                   test_tensor).mean(dim=1).cpu().numpy()
+        if not np.allclose(mse_reload, test_mse, atol=1e-6):
+            raise AssertionError("Autoencoder reload produced different scores.")
+        print("  Autoencoder reload reproduces test MSE.")
+    except Exception as exc:
+        reload_ok = False
+        print(f"  [!] Autoencoder reload failed: {exc}")
+
+    try:
+        saved_subspaces = np.load("ensemble_subspace_indices.npy", allow_pickle=True)
+        ens_reload = RandomSubspaceEnsemble(
+            input_dim=n_features,
+            preferred_subspaces=CONFIG["ensemble_preferred_subspaces"],
+            subspace_max=CONFIG["ensemble_subspace_max"],
+            sub_hidden=CONFIG["ensemble_sub_hidden"],
+            sub_latent=CONFIG["ensemble_sub_latent"],
+            out_hidden=CONFIG["ensemble_out_hidden"],
+            seed=CONFIG["seed"],
+            subspace_indices=saved_subspaces,
+        ).to(DEVICE)
+        ens_reload.load_state_dict(torch.load("ensemble_state_dict.pt",
+                                               map_location=DEVICE))
+        ens_reload.eval()
+        with torch.no_grad():
+            _, z_n, z_hat = ens_reload(test_tensor)
+            mse_reload = ((z_n - z_hat) ** 2).mean(dim=1).cpu().numpy()
+        if not np.allclose(mse_reload, ens_test_mse, atol=1e-6):
+            raise AssertionError("Ensemble reload produced different scores.")
+        print("  Ensemble reload reproduces test MSE (using saved subspaces).")
+    except Exception as exc:
+        reload_ok = False
+        print(f"  [!] Ensemble reload failed: {exc}")
+
+    # ---- Artifact verification ----------------------------------------
+    print("\n" + "=" * 80)
+    print("ARTIFACT VERIFICATION")
+    print("=" * 80)
+
+    # Record the package versions used for this run.
+    torch_index_url = "https://download.pytorch.org/whl/cpu"
+    requirements_lines = [
+        f"# Python {sys.version.split()[0]}",
+        f"# Torch CPU wheels index: {torch_index_url}",
+        f"torch=={torch.__version__.split('+')[0]}",
+        f"scikit-learn=={sklearn.__version__}",
+        f"pandas=={pd.__version__}",
+        f"numpy=={np.__version__}",
+        "joblib",
+        "packaging",
+    ]
+    with open("requirements.txt", "w") as f:
+        f.write("\n".join(requirements_lines) + "\n")
+
+    expected = [
+        "requirements.txt", "preprocessor.joblib", "rf_preprocessor.joblib",
+        "feature_names.json", "data_manifest.json",
+        "baseline_config.json", "experiment_config.json", "thresholds.json",
+        "train_indices.npy", "val_es_indices.npy",
+        "val_rules_indices.npy", "val_fusion_indices.npy",
+        "ocsvm_subsample_positions.npy", "ocsvm_subsample_original_ids.npy",
+        "ensemble_subspace_indices.npy",
+        "autoencoder_state_dict.pt", "ensemble_state_dict.pt",
+        "rf_comparator.joblib",
+        "rule_validation_search.csv", "fusion_validation_search.csv",
+        "final_experimental_results.csv",
+        "multi_seed_sensitivity.csv", "multi_seed_paired_deltas.csv",
+        "unseen_indicator_ablation.csv",
+        "test_dedup_sensitivity.csv",
+    ]
+    if test_attack_cat is not None:
+        expected.append("attack_category_results.csv")
+
+    missing = []
+    for fn in expected:
+        p = Path(fn)
+        if not p.exists():
+            missing.append(fn); status = "MISSING"
+        elif p.stat().st_size == 0:
+            missing.append(fn); status = "EMPTY"
+        else:
+            status = f"{p.stat().st_size:,} bytes"
+        print(f"  {fn:<42} [{status}]")
+
+    if missing:
+        raise RuntimeError(f"Missing artifacts: {missing}")
+
+    print(f"\nReload smoke test: {'PASSED' if reload_ok else 'FAILED'}")
+    print(f"Pipeline finished. {len(expected)} artifacts verified.")
+
+
+if __name__ == "__main__":
+    main()
