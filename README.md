@@ -273,20 +273,18 @@ COMP1818-NIDS-Project/
 ├── .gitignore
 ├── nids_pipeline.py          # full pipeline as a command-line script
 ├── nids_pipeline.ipynb       # Colab notebook with the saved run output
+├── references_AI.bib         # bibliography of the LaTeX report
 ├── data/
 │   └── README.md             # where to place the dataset CSVs
-├── artifacts/
-│   ├── README.md             # description of every output file
-│   ├── run_log.txt           # console output of the reported run
-│   ├── *.csv, *.json         # results, configuration, thresholds
-│   ├── *.npy                 # split, subsample and ensemble indices
-│   ├── autoencoder_state_dict.pt
-│   ├── ensemble_state_dict.pt
-│   ├── preprocessor.joblib
-│   └── rf_preprocessor.joblib
-└── report/
-    ├── README.md
-    └── references_AI.bib     # bibliography of the LaTeX report
+└── artifacts/
+    ├── README.md             # description of every output file
+    ├── run_log.txt           # console output of the reported run
+    ├── *.csv, *.json         # results, configuration, thresholds
+    ├── *.npy                 # split, subsample and ensemble indices
+    ├── autoencoder_state_dict.pt
+    ├── ensemble_state_dict.pt
+    ├── preprocessor.joblib
+    └── rf_preprocessor.joblib
 ```
 
 ## Installation
