@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/Framework-PyTorch-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![Dataset](https://img.shields.io/badge/Dataset-UNSW--NB15-20BEFF?logo=kaggle&logoColor=white)](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green)](https://github.com/vs2806m/COMP1818-NIDS-Project/blob/main/LICENSE)
 
 **University of Greenwich · COMP1818 Artificial Intelligence Applications**
 
@@ -240,8 +240,10 @@ to the unsupervised models.
 
 ### Dataset source
 
-- Used for this project: [UNSW-NB15 on Kaggle](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
-- Original source: [UNSW-NB15 dataset page (UNSW Canberra)](https://research.unsw.edu.au/projects/unsw-nb15-dataset)
+The dataset used for this project was downloaded from
+[UNSW-NB15 on Kaggle](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15).
+The dataset was created by Moustafa and Slay at UNSW Canberra; see
+[References](#references).
 
 The dataset is **not** included in this repository; check its usage
 conditions and citation requirements before any redistribution.
@@ -302,8 +304,7 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 ## Dataset setup
 
 1. Download `UNSW_NB15_training-set.csv` and `UNSW_NB15_testing-set.csv`
-   from the [Kaggle copy](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15)
-   used for this project (or from the original UNSW source).
+   from [UNSW-NB15 on Kaggle](https://www.kaggle.com/datasets/mrwellsdavid/unsw-nb15).
 2. Place both files in `data/`.
 
 In the Kaggle copy the two filenames are swapped relative to the official
@@ -383,7 +384,7 @@ runtime.
 
 ## Terms of use
 
-The code is released under the MIT licence (see [`LICENSE`](LICENSE)). The
+The code is released under the MIT licence (see [`LICENSE`](https://github.com/vs2806m/COMP1818-NIDS-Project/blob/main/LICENSE)). The
 UNSW-NB15 dataset is **not** covered by this licence and is not
 redistributed here; use it under the terms set by its creators and cite
 Moustafa and Slay when you do.
