@@ -1,0 +1,12 @@
+{
+  "isolation_forest": 0.5234231657921385,
+  "one_class_svm": -146.1082306951854,
+  "autoencoder_unsupervised": 0.0004321977321524173,
+  "autoencoder_label_tuned": 1.5,
+  "ensemble": 0.00045308482367545366,
+  "fusion": 1.0,
+  "fusion_alpha": 0.6,
+  "fusion_gamma": 0.1,
+  "implied_ml_threshold_when_no_rule_fires": 1.6666666666666667,
+  "implied_ml_threshold_when_rule_fires": 0.8571428571428572
+}

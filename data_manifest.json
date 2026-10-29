@@ -1,0 +1,105 @@
+{
+  "provenance": {
+    "train_path": "/content/UNSW_NB15_testing-set.csv",
+    "test_path": "/content/UNSW_NB15_training-set.csv",
+    "train_sha256": "bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa",
+    "test_sha256": "734fe6642edf758f7c94d7d9149426b49d202fe8e7bf0bef47392489c3c0a559",
+    "train_rows": 175341,
+    "test_rows": 82332
+  },
+  "orientation_note": "Official UNSW-NB15 split sizes are 175,341 training and 82,332 testing records. Local filenames may be reversed.",
+  "data_quality": {
+    "raw_duplicates_train": 67601,
+    "raw_duplicates_test": 26387,
+    "raw_cross_split_overlap": 940,
+    "model_duplicates_train": 74303,
+    "model_duplicates_test": 28386,
+    "model_cross_split_overlap": 1305,
+    "model_visible_columns": [
+      "dur",
+      "proto",
+      "service",
+      "state",
+      "spkts",
+      "dpkts",
+      "sbytes",
+      "dbytes",
+      "rate",
+      "dttl",
+      "sload",
+      "dload",
+      "sloss",
+      "dloss",
+      "sinpkt",
+      "dinpkt",
+      "sjit",
+      "djit",
+      "swin",
+      "dwin",
+      "tcprtt",
+      "synack",
+      "ackdat",
+      "smean",
+      "dmean",
+      "trans_depth",
+      "response_body_len",
+      "ct_srv_src",
+      "ct_dst_ltm",
+      "ct_src_dport_ltm",
+      "ct_dst_sport_ltm",
+      "ct_dst_src_ltm",
+      "is_ftp_login",
+      "ct_ftp_cmd",
+      "ct_flw_http_mthd",
+      "ct_src_ltm",
+      "ct_srv_dst",
+      "is_sm_ips_ports"
+    ],
+    "model_conflicting_label_groups": 229
+  },
+  "dropped_columns": [
+    "id",
+    "attack_cat",
+    "sttl",
+    "ct_state_ttl",
+    "stcpb",
+    "dtcpb"
+  ],
+  "drop_reasons": {
+    "id": "row identifier",
+    "attack_cat": "target-derived; would leak the binary label",
+    "sttl": "TTL reflects the fixed testbed topology rather than attack behaviour",
+    "ct_state_ttl": "same topology dependence as sttl",
+    "stcpb": "TCP base sequence number; per-flow random identifier",
+    "dtcpb": "TCP base sequence number; per-flow random identifier"
+  },
+  "splits": {
+    "train": 150091,
+    "val_es": 12739,
+    "val_rules": 6152,
+    "val_fusion": 6359
+  },
+  "split_method": "GroupShuffleSplit on model-visible feature-vector hash",
+  "preprocessing": {
+    "categorical_columns": [
+      "proto",
+      "service",
+      "state"
+    ],
+    "heavy_tailed_log1p_cols": [
+      "sload",
+      "dload",
+      "rate",
+      "sbytes",
+      "dbytes"
+    ],
+    "unseen_category_indicators": [
+      "__unseen_proto",
+      "__unseen_service",
+      "__unseen_state"
+    ],
+    "minmax_scaler_fit_on": "normal training rows only",
+    "feature_dim_after_transform": 63
+  },
+  "val_fusion_note": "val_fusion contains 2097 normal rows. Every percentile threshold, the fusion grid search, and the label-tuned control are calibrated on this subset. See the report's limitations section."
+}

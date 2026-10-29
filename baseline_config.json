@@ -1,0 +1,18 @@
+{
+  "seed": 42,
+  "threshold_percentile": 95,
+  "isolation_forest": {
+    "n_estimators": 100,
+    "score_definition": "negated score_samples",
+    "raw_score_threshold": 0.5234231657921385
+  },
+  "one_class_svm": {
+    "kernel": "rbf",
+    "gamma": "scale",
+    "nu": 0.05,
+    "score_definition": "negated score_samples",
+    "raw_score_threshold": -146.1082306951854,
+    "samples_used": 10000,
+    "original_ids_sha256": "fee8bd818f586f548c9a12ef1050621a45737f9118b5445f43e130c920db9d8e"
+  }
+}
