@@ -374,7 +374,7 @@ University of Greenwich.
 
 ## AI use declaration
 
-Generative AI was used to generate and debug parts of the pipeline code, to
+Generative AI was used to  debug parts of the pipeline code, to
 review the experimental methodology, and to give feedback on drafts of the
 report and this README. AI-assisted review flagged errors that I then
 verified and corrected, including an `id` column that hid feature-vector
