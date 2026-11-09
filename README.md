@@ -462,12 +462,15 @@ University of Greenwich.
 
 ## AI use declaration
 
-Generative AI tools (ChatGPT and Claude) were used to support code debugging,
-methodological review, and report editing. They also supported my learning by
-helping me examine model design, evaluation metrics, threshold calibration,
-and the distinction between symbolic rules and learned anomaly scores. I
-reviewed the suggested changes and checked reported values against the saved
-experimental output files and run log. Reported numbers come from the saved
+Generative AI tools (ChatGPT and Claude) were used to support code
+debugging, methodological review, and report editing. They also sup-
+ported my learning by helping me examine model design, evaluation
+metrics, threshold calibration, and the distinction between symbolic
+rules and learned anomaly scores. I reviewed the suggested changes
+and checked reported values against the saved experimental output
+files and run log; I did not rerun the complete experimental pipeline
+for this submission. The final interpretation and any remaining correc-
+tions are my responsibility. Reported numbers come from the saved
 run in [`artifacts/run_log.txt`](artifacts/run_log.txt), or are calculated from
 the saved outputs as described in
 [Post-hoc calculations](#post-hoc-calculations). The final interpretation and
