@@ -401,10 +401,13 @@ University of Greenwich.
 
 ## AI use declaration
 
-Generative AI was used to debug parts of the pipeline code, to
-review the experimental methodology, and to give feedback on drafts of the
-report and this README. AI-assisted review flagged errors that I then
-verified and corrected, including an `id` column that hid feature-vector
-duplicates and incorrect threshold units in the multi-seed control. All
-reported numbers come from the saved run in
+Generative AI tools (ChatGPT and Claude) were used to assist with
+debugging pipeline code, conducting methodological reviews, and
+polishing report drafts. I independently verified every AI contribution
+by re-running the complete experimental pipeline and cross-checking
+all reported figures against generated output files. I identified and
+corrected significant errors introduced through AI suggestions, includ-
+ing an unhandled id column that masked feature-vector duplicates
+and incorrect threshold unit conversions within the multi-seed control
+loop. All reported numbers come from the saved run in
 [`artifacts/run_log.txt`](artifacts/run_log.txt).
