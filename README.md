@@ -437,15 +437,15 @@ These match [`references_AI.bib`](references_AI.bib), the bibliography of the re
 1. Bizzarri, A., Yu, C.-E., Jalaian, B., Riguzzi, F. and Bastian, N. D. (2025). *Neurosymbolic AI for network intrusion detection systems: A survey.* Journal of Information Security and Applications, 94, 104205.
 2. Buczak, A. L. and Guven, E. (2016). *A survey of data mining and machine learning methods for cyber security intrusion detection.* IEEE Communications Surveys and Tutorials, 18(2), 1153–1176.
 3. Chalapathy, R. and Chawla, S. (2019). *Deep learning for anomaly detection: A survey.* arXiv:1901.03407.
-4. de Araujo-Filho, P. F., Naili, M., Kaddoum, G., Fapi, E. T. and Zhu, Z. (2023). *Unsupervised GAN-based intrusion detection system using temporal convolutional networks and self-attention.* IEEE Transactions on Network and Service Management, 20(4), 4951–4963.
+4. De Araujo-Filho, P. F., Naili, M., Kaddoum, G., Fapi, E. T. and Zhu, Z. (2023). *Unsupervised GAN-based intrusion detection system using temporal convolutional networks and self-attention.* IEEE Transactions on Network and Service Management, 20(4), 4951–4963.
 5. Hinton, G. E. and Salakhutdinov, R. R. (2006). *Reducing the dimensionality of data with neural networks.* Science, 313(5786), 504–507.
 6. Liu, F. T., Ting, K. M. and Zhou, Z.-H. (2008). *Isolation Forest.* IEEE International Conference on Data Mining, 413–422.
 7. Mirsky, Y., Doitshman, T., Elovici, Y. and Shabtai, A. (2018). *Kitsune: An ensemble of autoencoders for online network intrusion detection.* NDSS.
 8. Moustafa, N. and Slay, J. (2015). *UNSW-NB15: A comprehensive data set for network intrusion detection systems.* MilCIS, IEEE, 1–6.
 9. Schölkopf, B., Platt, J. C., Shawe-Taylor, J., Smola, A. J. and Williamson, R. C. (2001). *Estimating the support of a high-dimensional distribution.* Neural Computation, 13(7), 1443–1471.
 10. Sommer, R. and Paxson, V. (2010). *Outside the closed world: On using machine learning for network intrusion detection.* IEEE Symposium on Security and Privacy, 305–316.
-11. Verkerken, M., D'hooge, L., Sudyana, D., Lin, Y.-D., Wauters, T., Volckaert, B. and De Turck, F. (2023). *A novel multi-stage approach for hierarchical intrusion detection.* IEEE Transactions on Network and Service Management, 20(3), 3915–3929.
-12. Zoghi, Z. and Serpen, G. (2024). *Building an intrusion detection system on UNSW-NB15: Reducing the margin of error to deal with data overlap and imbalance.* Concurrency and Computation: Practice and Experience, 36(25).
+11. Verkerken, M., D'Hooge, L., Sudyana, D., Lin, Y.-D., Wauters, T., Volckaert, B. and De Turck, F. (2023). *A novel multi-stage approach for hierarchical intrusion detection.* IEEE Transactions on Network and Service Management, 20(3), 3915–3929.
+12. Zoghi, Z. and Serpen, G. (2024). *Building an intrusion detection system on UNSW-NB15: Reducing the margin of error to deal with data overlap and imbalance.* Concurrency and Computation: Practice and Experience, 36(25), e8242.
 
 ---
 
@@ -462,14 +462,4 @@ University of Greenwich.
 
 ## AI use declaration
 
-Generative AI tools (ChatGPT and Claude) were used to support code debugging,
-methodological review, and report editing. They also supported my learning by
-helping me examine model design, evaluation metrics, threshold calibration,
-and the distinction between symbolic rules and learned anomaly scores. I
-reviewed the suggested changes and checked reported values against the saved
-experimental output files and run log; I did not rerun the complete
-experimental pipeline for this submission. Reported numbers come from the
-saved run in [`artifacts/run_log.txt`](artifacts/run_log.txt), or are
-calculated from the saved outputs as described in
-[Post-hoc calculations](#post-hoc-calculations). The final interpretation and
-any remaining corrections are my responsibility.
+Generative AI tools (ChatGPT and Claude) supported code debugging, methodological review, and report editing. They also supported my learning about model design, evaluation metrics, threshold calibration, and the distinction between symbolic rules and learned anomaly scores. I reviewed the suggestions and checked reported values against saved experimental outputs and the run log; I did not rerun the complete experimental pipeline for this submission. Reported post-hoc calculations were checked against the saved outputs. The final interpretation and any remaining corrections are my responsibility.
