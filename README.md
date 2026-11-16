@@ -1,8 +1,8 @@
 <div align="center">
 
-# Neuro-Symbolic Network Anomaly Detection on UNSW-NB15
+# Evaluating Neuro-Symbolic Network Intrusion Detection: A Controlled Study of Rule-Based Fusion with Autoencoders on UNSW-NB15
 
-### Evaluating Neuro-Symbolic Network Intrusion Detection: A Controlled Study of Rule-Based Fusion with Autoencoders on UNSW-NB15
+### COMP1818 Individual Coursework · University of Greenwich
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/Framework-PyTorch-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
@@ -104,9 +104,11 @@ python ..\nids_pipeline.py | Tee-Object run_log.txt
 Compare the files in `rerun/` with those in [`artifacts/`](artifacts/).
 
 **Google Colab:** click the *Open in Colab* badge above, upload the two CSV
-files to `/content`, and choose **Runtime → Run all**. The notebook is the
-version that produced the saved outputs; `nids_pipeline.py` differs from it
-only by one unused assignment and a comment.
+files to `/content`, and choose **Runtime → Run all**. The notebook includes
+an additional dataset-upload check cell and one unused assignment. Its
+PyTorch wheel URL is constructed from two concatenated string literals to
+avoid automatic link conversion; the main pipeline logic is otherwise
+consistent with the standalone `nids_pipeline.py` script.
 
 The multi-seed section retrains every model five times and accounts for most
 of the runtime. You do not need to run the pipeline to inspect the results:
@@ -462,4 +464,4 @@ University of Greenwich.
 
 ## AI use declaration
 
-Generative AI tools (ChatGPT and Claude) supported code debugging, methodological review, and report editing. They also supported my learning about model design, evaluation metrics, threshold calibration, and the distinction between symbolic rules and learned anomaly scores. I reviewed the suggestions and checked reported values against saved experimental outputs and the run log. Reported post-hoc calculations were checked against the saved outputs. The final interpretation and any remaining corrections are my responsibility.
+Generative AI tools (ChatGPT and Claude) were used to support code debugging, methodological review, and report editing. They also assisted my understanding of model design, evaluation metrics, threshold calibration, and the distinction between symbolic rules and learned anomaly scores. I critically reviewed the suggestions, selectively incorporated relevant improvements, and edited the resulting text to reflect my own understanding. Reported values and post-hoc calculations were checked against saved experimental outputs and run logs. The final analysis, interpretation, and responsibility for the submitted work remain my own.
