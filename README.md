@@ -2,9 +2,7 @@
 
 # Neuro-Symbolic Network Anomaly Detection on UNSW-NB15
 
-### Evaluating Neuro-Symbolic Network Intrusion Detection:
-A Controlled Study of Rule-Based Fusion with
-Autoencoders on UNSW-NB15
+### Evaluating Neuro-Symbolic Network Intrusion Detection: A Controlled Study of Rule-Based Fusion with Autoencoders on UNSW-NB15
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/Framework-PyTorch-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
