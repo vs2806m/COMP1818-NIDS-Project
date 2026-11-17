@@ -446,7 +446,7 @@ These match [`references_AI.bib`](references_AI.bib), the bibliography of the re
 8. Moustafa, N. and Slay, J. (2015). *UNSW-NB15: A comprehensive data set for network intrusion detection systems.* MilCIS, IEEE, 1–6.
 9. Schölkopf, B., Platt, J. C., Shawe-Taylor, J., Smola, A. J. and Williamson, R. C. (2001). *Estimating the support of a high-dimensional distribution.* Neural Computation, 13(7), 1443–1471.
 10. Sommer, R. and Paxson, V. (2010). *Outside the closed world: On using machine learning for network intrusion detection.* IEEE Symposium on Security and Privacy, 305–316.
-11. Verkerken, M., D'Hooge, L., Sudyana, D., Lin, Y.-D., Wauters, T., Volckaert, B. and De Turck, F. (2023). *A novel multi-stage approach for hierarchical intrusion detection.* IEEE Transactions on Network and Service Management, 20(3), 3915–3929.
+11. Verkerken, M., D'hooge, L., Sudyana, D., Lin, Y.-D., Wauters, T., Volckaert, B. and De Turck, F. (2023). *A novel multi-stage approach for hierarchical intrusion detection.* IEEE Transactions on Network and Service Management, 20(3), 3915–3929.
 12. Zoghi, Z. and Serpen, G. (2024). *Building an intrusion detection system on UNSW-NB15: Reducing the margin of error to deal with data overlap and imbalance.* Concurrency and Computation: Practice and Experience, 36(25), e8242.
 
 ---
